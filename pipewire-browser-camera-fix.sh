@@ -366,51 +366,74 @@ check_chromium_flag() {
 snap_profile() { [[ "$1" == "$HOME"/snap/* ]]; }
 flatpak_profile() { [[ "$1" == "$HOME"/.var/app/* ]]; }
 
+# Short label for the status list, like the Chrome lines: "Firefox",
+# "Firefox (snap)", "Firefox (flatpak)". $2 set: also name the profile, for
+# when one kind of Firefox has more than one profile in use.
+firefox_status_label() {
+    local prefs="$1" kind=""
+    case "$prefs" in
+        "$HOME"/snap/*)     kind=" (snap)" ;;
+        "$HOME"/.var/app/*) kind=" (flatpak)" ;;
+    esac
+    if [[ -n "${2:-}" ]]; then
+        local dir=${prefs%/prefs.js}
+        printf 'Firefox%s [%s]' "$kind" "${dir##*/}"
+    else
+        printf 'Firefox%s' "$kind"
+    fi
+}
+
 check_firefox_pref() {
     section "Firefox PipeWire camera pref ($FF_PREF)"
-    local -a files=() turn_on=() turn_off=()
-    local prefs value user_js shown effective used_root unused_root="" label sys sys_value="" sys_file=""
-    local snaps=0 unused=0 user_js_set=0
+    local -a files=() used=() turn_on=() turn_off=()
+    local -A per_kind=()
+    local prefs value user_js effective used_root unused_root="" label status kind
+    local sys sys_value="" snaps=0 unused=0 user_js_set=0
     mapfile -t files < <(firefox_prefs_files)
     if (( ${#files[@]} == 0 )); then
         echo "  No Firefox profile found."
         return 0
     fi
     sys=$(firefox_system_default)
-    if [[ -n "$sys" ]]; then
-        sys_value=${sys%% *}
-        sys_file=${sys#* }
-    fi
+    [[ -n "$sys" ]] && sys_value=${sys%% *}
+
+    # Profiles Firefox doesn't read are counted, not listed.
     for prefs in "${files[@]}"; do
-        value=$(firefox_pref_value "$prefs")
-        user_js=$(firefox_user_js_value "$prefs")
-        label=$(profile_label "$prefs")
-
-        if [[ -n "$user_js" ]]; then
-            effective=$user_js
-            shown="(user.js, which overrides prefs.js)"
-        elif [[ -n "$value" ]]; then
-            effective=$value
-            shown="(prefs.js)"
-        elif [[ -n "$sys_value" ]] && ! snap_profile "$prefs" && ! flatpak_profile "$prefs"; then
-            effective=$sys_value
-            shown="(not in prefs.js; package default: $sys_file)"
-        else
-            effective=false
-            shown="(not in prefs.js; Firefox default)"
-        fi
-        if [[ "$effective" == true ]]; then shown="on  $shown"; else shown="off $shown"; fi
-
         if used_root=$(firefox_unused_profile "$prefs"); then
-            unused=1
+            unused=$((unused + 1))
             unused_root=$used_root
-            printf '  %-44s %s — not used\n' "$label:" "$shown"
             continue
         fi
-        # Only a profile Firefox reads can be its default: an unused folder's
-        # installs.ini still names one of its own.
-        firefox_default_profile "$prefs" && label+=" (default)"
-        printf '  %-44s %s\n' "$label:" "$shown"
+        used+=("$prefs")
+        kind=$(firefox_status_label "$prefs")
+        per_kind[$kind]=$(( ${per_kind[$kind]:-0} + 1 ))
+    done
+
+    for prefs in "${used[@]}"; do
+        value=$(firefox_pref_value "$prefs")
+        user_js=$(firefox_user_js_value "$prefs")
+        # Where the value comes from: user.js, then prefs.js, then the native
+        # package's own default (Fedora turns it on), then Firefox's (off).
+        if [[ -n "$user_js" ]]; then
+            effective=$user_js
+        elif [[ -n "$value" ]]; then
+            effective=$value
+        elif [[ -n "$sys_value" ]] && ! snap_profile "$prefs" && ! flatpak_profile "$prefs"; then
+            effective=$sys_value
+        else
+            effective=false
+        fi
+
+        kind=$(firefox_status_label "$prefs")
+        if (( ${per_kind[$kind]} > 1 )); then
+            label=$(firefox_status_label "$prefs" named)
+            firefox_default_profile "$prefs" && label+=" (default)"
+        else
+            label=$kind
+        fi
+        if [[ "$effective" == true ]]; then status="ENABLED"; else status="DISABLED"; fi
+        [[ -n "$user_js" ]] && status+=" (set in user.js)"
+        printf '  %-20s %s\n' "$label:" "$status"
 
         if snap_profile "$prefs"; then
             snaps=1
@@ -422,9 +445,8 @@ check_firefox_pref() {
         fi
     done
     if (( unused )); then
-        echo "  \"not used\": Firefox reads its profiles from ${unused_root/#$HOME/\~} (since"
-        echo "  Firefox 147 it ignores ~/.config/mozilla while ~/.mozilla exists), so the"
-        echo "  profiles marked above make no difference. They are left alone."
+        # Firefox 147+ ignores ~/.config/mozilla while ~/.mozilla exists.
+        echo "  ($unused unused profile(s) skipped: Firefox reads ${unused_root/#$HOME/\~})"
     fi
     if (( user_js_set )); then
         echo "  A user.js sets the pref the other way and wins over prefs.js at every"
