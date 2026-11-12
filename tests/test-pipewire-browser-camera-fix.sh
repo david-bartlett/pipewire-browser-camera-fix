@@ -224,13 +224,17 @@ add_profile "$d" .mozilla/firefox/txwhf7mb.default-release
 printf '[Install11457493C5A56847]\nDefault=txwhf7mb.default-release\nLocked=1\n' \
     > "$d/home/.mozilla/firefox/installs.ini"
 add_profile "$d" .config/mozilla/firefox/jidixcko.default-release false
+printf '[Install11457493C5A56847]\nDefault=jidixcko.default-release\nLocked=1\n' \
+    > "$d/home/.config/mozilla/firefox/installs.ini"
 system_default "$d" usr/lib64/firefox/browser/defaults/preferences/firefox-redhat-default-prefs.js true
 run "$d" yes
 check "Fedora: unset pref shown as on, from the package default" \
-    'grep -q "txwhf7mb.default-release\] (default): *not set → true (system default, firefox-redhat-default-prefs.js)" "$d/out"'
+    'grep -q "txwhf7mb.default-release\] (default): *on  (not in prefs.js; package default: firefox-redhat-default-prefs.js)" "$d/out"'
 check "Fedora: profile already on by default not edited" \
     '[[ ! -e "$d/home/.mozilla/firefox/txwhf7mb.default-release/prefs.js.pipewire-browser-camera-fix.bak" ]]'
-check "XDG profile marked not used while ~/.mozilla exists" 'grep -q "jidixcko.default-release\]: *false — not used" "$d/out"'
+check "XDG profile marked not used while ~/.mozilla exists" 'grep -q "jidixcko.default-release\]: *off (prefs.js) — not used" "$d/out"'
+check "unused profile not marked (default), though its own installs.ini names it" \
+    '! grep -q "jidixcko.default-release\] (default)" "$d/out"'
 check "unused XDG profile not edited" '[[ "$(pref_in "$d" .config/mozilla/firefox/jidixcko.default-release)" == false ]]'
 check "says which folder Firefox reads" 'grep -q "reads its profiles from ~/.mozilla/firefox" "$d/out"'
 check "nothing recorded" '[[ -z "$(state_of "$d")" ]]'
@@ -245,7 +249,7 @@ check "no ~/.mozilla: not marked unused" '! grep -q "not used" "$d/out"'
 d=$(new_env)
 add_profile "$d" .mozilla/firefox/abc.default-release
 run "$d" yes
-check "no package default: unset shown as Firefox default false" 'grep -q "not set → false (Firefox default)" "$d/out"'
+check "no package default: unset shown as Firefox default false" 'grep -q "off (not in prefs.js; Firefox default)" "$d/out"'
 check "no package default: unset pref turned on" '[[ "$(pref_in "$d" .mozilla/firefox/abc.default-release)" == true ]]'
 
 d=$(new_env)
@@ -259,7 +263,7 @@ d=$(new_env)
 add_profile "$d" .mozilla/firefox/abc.default-release
 echo 'user_pref("media.webrtc.camera.allow-pipewire", false);' > "$d/home/.mozilla/firefox/abc.default-release/user.js"
 run "$d" yes
-check "user.js wins: shown as such" 'grep -q "false (set in user.js" "$d/out"'
+check "user.js wins: shown as such" 'grep -q "off (user.js, which overrides prefs.js)" "$d/out"'
 check "user.js wins: prefs.js not edited" '[[ -z "$(pref_in "$d" .mozilla/firefox/abc.default-release)" ]]'
 check "user.js wins: told to edit it by hand" 'grep -q "Edit that user.js line by hand" "$d/out"'
 

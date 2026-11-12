@@ -385,21 +385,21 @@ check_firefox_pref() {
         value=$(firefox_pref_value "$prefs")
         user_js=$(firefox_user_js_value "$prefs")
         label=$(profile_label "$prefs")
-        firefox_default_profile "$prefs" && label+=" (default)"
 
         if [[ -n "$user_js" ]]; then
             effective=$user_js
-            shown="$user_js (set in user.js, which overrides prefs.js)"
+            shown="(user.js, which overrides prefs.js)"
         elif [[ -n "$value" ]]; then
             effective=$value
-            shown=$value
+            shown="(prefs.js)"
         elif [[ -n "$sys_value" ]] && ! snap_profile "$prefs" && ! flatpak_profile "$prefs"; then
             effective=$sys_value
-            shown="not set → $sys_value (system default, $sys_file)"
+            shown="(not in prefs.js; package default: $sys_file)"
         else
             effective=false
-            shown="not set → false (Firefox default)"
+            shown="(not in prefs.js; Firefox default)"
         fi
+        if [[ "$effective" == true ]]; then shown="on  $shown"; else shown="off $shown"; fi
 
         if used_root=$(firefox_unused_profile "$prefs"); then
             unused=1
@@ -407,6 +407,9 @@ check_firefox_pref() {
             printf '  %-44s %s — not used\n' "$label:" "$shown"
             continue
         fi
+        # Only a profile Firefox reads can be its default: an unused folder's
+        # installs.ini still names one of its own.
+        firefox_default_profile "$prefs" && label+=" (default)"
         printf '  %-44s %s\n' "$label:" "$shown"
 
         if snap_profile "$prefs"; then

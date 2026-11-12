@@ -94,10 +94,10 @@ Nothing outside the snap can fix that, so the script leaves the pref off there (
 
 ## Which Firefox profiles
 
-The script lists every profile it finds and marks the one Firefox opens by default (from `installs.ini`, or `profiles.ini` on older setups). It leaves some profiles alone:
+The script lists every profile it finds, shows whether the pref is on or off and where that comes from, and marks the one Firefox opens by default (from `installs.ini`, or `profiles.ini` on older setups). It leaves some profiles alone:
 
 - **Profiles Firefox doesn't use.** Since Firefox 147, new profiles go in `~/.config/mozilla/firefox`, but only when `~/.mozilla` doesn't exist. While it does, Firefox keeps using `~/.mozilla/firefox` and never reads `~/.config/mozilla`. Profiles there are shown as "not used" and not changed. Flatpak Firefox works the same way inside `~/.var/app/org.mozilla.firefox`.
-- **Profiles that are already on through the package's own default.** Fedora's Firefox package turns the pref on in `firefox-redhat-default-prefs.js`, so a profile without the line is already on. The script reads the defaults a native Firefox package ships and shows, for example, `not set → true (system default, firefox-redhat-default-prefs.js)`.
+- **Profiles that are already on through the package's own default.** Fedora's Firefox package turns the pref on in `firefox-redhat-default-prefs.js`, so a profile without the line is already on. The script reads the defaults a native Firefox package ships and shows, for example, `on  (not in prefs.js; package default: firefox-redhat-default-prefs.js)`.
 - **Profiles with a `user.js` that sets the pref.** Firefox applies `user.js` at every start, over `prefs.js`, so the script says so and leaves that line for you to change.
 
 ## What it changes
