@@ -1,4 +1,4 @@
-# Browser Camera Fix
+# Pipewire Browser Camera Fix
 
 A script to run when the webcam works in other apps but not in **Chrome, Chromium or Firefox**: no camera listed, or the page stuck at **"Waiting for your permission"** with no prompt.
 
