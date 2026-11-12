@@ -189,7 +189,7 @@ browser_portal_app_ids() {
 firefox_prefs_files() {
     local root prefs
     for root in "$HOME/.mozilla/firefox" \
-                "$HOME/.config/mozilla/firefox" \
+                "${XDG_CONFIG_HOME:-$HOME/.config}/mozilla/firefox" \
                 "$HOME/snap/firefox/common/.mozilla/firefox" \
                 "$HOME/.var/app/org.mozilla.firefox/.mozilla/firefox" \
                 "$HOME/.var/app/org.mozilla.firefox/config/mozilla/firefox"; do
@@ -199,6 +199,73 @@ firefox_prefs_files() {
         done
     done
     return 0
+}
+
+# Firefox 147 and later keep profiles in ~/.config/mozilla (XDG), but only when
+# ~/.mozilla doesn't exist: while it does (or MOZ_LEGACY_HOME is set), Firefox
+# goes on using ~/.mozilla and never reads the XDG folder (Mozilla bug 259356).
+# Flatpak Firefox does the same inside ~/.var/app/org.mozilla.firefox. Prints
+# the folder Firefox uses instead when $1 is in a profile it doesn't use.
+firefox_unused_profile() {
+    local prefs="$1" flatpak="$HOME/.var/app/org.mozilla.firefox"
+    case "$prefs" in
+        "${XDG_CONFIG_HOME:-$HOME/.config}/mozilla/firefox/"*)
+            if [[ -d "$HOME/.mozilla" || -n "${MOZ_LEGACY_HOME:-}" ]]; then
+                echo "$HOME/.mozilla/firefox"; return 0
+            fi ;;
+        "$flatpak/config/mozilla/firefox/"*)
+            if [[ -d "$flatpak/.mozilla" ]]; then
+                echo "$flatpak/.mozilla/firefox"; return 0
+            fi ;;
+    esac
+    return 1
+}
+
+# Is $1 the profile Firefox opens by default? installs.ini names the default
+# profile per Firefox install; older setups only have Default=1 in profiles.ini.
+firefox_default_profile() {
+    local dir=${1%/prefs.js} root name
+    root=${dir%/*}
+    name=${dir##*/}
+    if [[ -f "$root/installs.ini" ]]; then
+        grep -qxF "Default=$name" "$root/installs.ini"
+        return
+    fi
+    [[ -f "$root/profiles.ini" ]] || return 1
+    awk -v want="$name" '
+        /^\[/          { if (path == want && def) found = 1; path = ""; def = 0 }
+        /^Path=/        { path = substr($0, 6) }
+        /^Default=1$/   { def = 1 }
+        END             { if (path == want && def) found = 1; exit !found }
+    ' "$root/profiles.ini"
+}
+
+# The default a native Firefox package ships for the pref, as "value file":
+# Fedora's firefox-redhat-default-prefs.js turns it on, for example. Nothing
+# when no package sets it, and the pref is then off (Mozilla's default).
+# FF_SYSTEM_ROOT is for the tests.
+firefox_system_default() {
+    local r="${FF_SYSTEM_ROOT:-}" dir file line found=""
+    local -a files=()
+    for dir in "$r"/usr/lib64/firefox "$r"/usr/lib/firefox "$r"/usr/lib64/firefox-esr \
+               "$r"/usr/lib/firefox-esr "$r"/opt/firefox; do
+        files+=("$dir"/defaults/pref/*.js "$dir"/browser/defaults/preferences/*.js)
+    done
+    files+=("$r"/etc/firefox/syspref.js "$r"/etc/firefox/pref/*.js "$r"/etc/firefox-esr/*.js)
+    for file in "${files[@]}"; do
+        [[ -f "$file" ]] || continue
+        line=$(sed -n 's/^[[:space:]]*\(pref\|defaultPref\|lockPref\)("media\.webrtc\.camera\.allow-pipewire",[[:space:]]*\(true\|false\)).*/\2/p' \
+            "$file" 2>/dev/null | tail -1)
+        [[ -n "$line" ]] && found="$line ${file##*/}"
+    done
+    [[ -n "$found" ]] && echo "$found"
+    return 0
+}
+
+# A user.js beside prefs.js is read at every start and wins over prefs.js:
+# true, false, or nothing when it doesn't set the pref.
+firefox_user_js_value() {
+    firefox_pref_value "${1%/prefs.js}/user.js"
 }
 
 # true, false, or nothing when the pref is not in the file (Firefox's default).
@@ -297,26 +364,69 @@ check_chromium_flag() {
 # handle"), and Firefox crashes when a site asks for the camera. There the pref
 # stays off, and Firefox uses the V4L2 camera (Camera Relay's loopback device).
 snap_profile() { [[ "$1" == "$HOME"/snap/* ]]; }
+flatpak_profile() { [[ "$1" == "$HOME"/.var/app/* ]]; }
 
 check_firefox_pref() {
     section "Firefox PipeWire camera pref ($FF_PREF)"
     local -a files=() turn_on=() turn_off=()
-    local prefs value snaps=0
+    local prefs value user_js shown effective used_root unused_root="" label sys sys_value="" sys_file=""
+    local snaps=0 unused=0 user_js_set=0
     mapfile -t files < <(firefox_prefs_files)
     if (( ${#files[@]} == 0 )); then
         echo "  No Firefox profile found."
         return 0
     fi
+    sys=$(firefox_system_default)
+    if [[ -n "$sys" ]]; then
+        sys_value=${sys%% *}
+        sys_file=${sys#* }
+    fi
     for prefs in "${files[@]}"; do
         value=$(firefox_pref_value "$prefs")
-        printf '  %-32s %s\n' "$(profile_label "$prefs"):" "${value:-not set (Firefox default)}"
+        user_js=$(firefox_user_js_value "$prefs")
+        label=$(profile_label "$prefs")
+        firefox_default_profile "$prefs" && label+=" (default)"
+
+        if [[ -n "$user_js" ]]; then
+            effective=$user_js
+            shown="$user_js (set in user.js, which overrides prefs.js)"
+        elif [[ -n "$value" ]]; then
+            effective=$value
+            shown=$value
+        elif [[ -n "$sys_value" ]] && ! snap_profile "$prefs" && ! flatpak_profile "$prefs"; then
+            effective=$sys_value
+            shown="not set → $sys_value (system default, $sys_file)"
+        else
+            effective=false
+            shown="not set → false (Firefox default)"
+        fi
+
+        if used_root=$(firefox_unused_profile "$prefs"); then
+            unused=1
+            unused_root=$used_root
+            printf '  %-44s %s — not used\n' "$label:" "$shown"
+            continue
+        fi
+        printf '  %-44s %s\n' "$label:" "$shown"
+
         if snap_profile "$prefs"; then
             snaps=1
-            [[ "$value" == "true" ]] && turn_off+=("$prefs")
-        else
-            [[ "$value" == "true" ]] || turn_on+=("$prefs")
+            if [[ "$effective" == "true" ]]; then
+                if [[ -n "$user_js" ]]; then user_js_set=1; else turn_off+=("$prefs"); fi
+            fi
+        elif [[ "$effective" != "true" ]]; then
+            if [[ -n "$user_js" ]]; then user_js_set=1; else turn_on+=("$prefs"); fi
         fi
     done
+    if (( unused )); then
+        echo "  \"not used\": Firefox reads its profiles from ${unused_root/#$HOME/\~} (since"
+        echo "  Firefox 147 it ignores ~/.config/mozilla while ~/.mozilla exists), so the"
+        echo "  profiles marked above make no difference. They are left alone."
+    fi
+    if (( user_js_set )); then
+        echo "  A user.js sets the pref the other way and wins over prefs.js at every"
+        echo "  start, so this script won't change it. Edit that user.js line by hand."
+    fi
     if (( snaps )); then
         echo "  Snap Firefox crashes on the PipeWire camera (its PipeWire library can't"
         echo "  load its plugins inside the snap), so the pref stays off there and"

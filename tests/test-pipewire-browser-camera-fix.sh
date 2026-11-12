@@ -6,7 +6,9 @@
 #      ID per channel, snap.<name>) — a grant under any other ID does nothing.
 #   2. A stored "no" is never changed without a person saying so, even --yes.
 #   3. Firefox prefs are never edited while Firefox runs (it rewrites prefs.js
-#      on exit), and only the profiles that need it are touched.
+#      on exit), and only the profiles that need it are touched: not profiles
+#      Firefox doesn't use, not ones already on by the package's default, and
+#      not ones where a user.js decides.
 #   4. --undo puts back exactly what the script changed, and nothing else.
 #   5. --check changes nothing.
 #
@@ -38,7 +40,7 @@ new_env() {
     local d="$TMP/env-$RANDOM$RANDOM" tool
     mkdir -p "$d/bin" "$d/home" "$d/proc" "$d/snap"
     : > "$d/store"
-    for tool in grep sort head tail readlink mkdir rm rmdir cat sed wc mv cp mktemp chmod tr; do
+    for tool in grep sort head tail readlink mkdir rm rmdir cat sed wc mv cp mktemp chmod tr awk; do
         ln -s "$(command -v "$tool")" "$d/bin/$tool"
     done
     cat > "$d/bin/busctl" <<EOF
@@ -98,6 +100,11 @@ add_profile() {
         [[ -n "${3:-}" ]] && echo "user_pref(\"media.webrtc.camera.allow-pipewire\", $3);"
     } > "$1/home/$2/prefs.js"
 }
+# system_default ENV FILE VALUE: a Firefox package's own default for the pref.
+system_default() {
+    mkdir -p "$1/sys/${2%/*}"
+    echo "pref(\"media.webrtc.camera.allow-pipewire\", $3);" > "$1/sys/$2"
+}
 pref_in() { sed -n 's/^user_pref("media\.webrtc\.camera\.allow-pipewire", \(.*\));$/\1/p' "$1/home/$2/prefs.js"; }
 
 # Run the script's checks (or --undo) in env $1 with mode $2, stdin not a terminal.
@@ -106,13 +113,17 @@ run() {
     (
         PATH="$d/bin"
         HOME="$d/home"
-        unset XDG_STATE_HOME
+        unset XDG_STATE_HOME XDG_CONFIG_HOME MOZ_LEGACY_HOME
+        # shellcheck disable=SC2034  # read by firefox_system_default
+        FF_SYSTEM_ROOT="$d/sys"
         # shellcheck disable=SC2034  # read by the evaluated functions
         MODE="$mode"
         eval "$(sed -n '/^STATE_FILE=/,/^PORTAL_STORE_PATH=/p' "$SCRIPT")"
         for fn in section answer_yes ask ask_always record portal_store portal_camera_entries \
                   portal_camera_state running_chromium_scope_ids firefox_prefs_files \
                   firefox_pref_value firefox_running firefox_set_pref profile_label snap_profile \
+                  flatpak_profile firefox_unused_profile firefox_default_profile \
+                  firefox_system_default firefox_user_js_value \
                   check_environment check_chromium_flag check_firefox_pref check_portal \
                   undo_changes; do
             eval "$(extract_fn "$fn")"
@@ -205,6 +216,61 @@ touch "$d/firefox-running"
 run "$d" yes
 check "Firefox running: prefs.js not edited" '[[ "$(pref_in "$d" .mozilla/firefox/abc.default-release)" == false ]]'
 check "Firefox running: told to quit it" 'grep -q "Firefox is running" "$d/out"'
+
+# Firefox 147+ ignores ~/.config/mozilla while ~/.mozilla exists, and Fedora's
+# package turns the pref on by default (Fedora 45, KDE).
+d=$(new_env)
+add_profile "$d" .mozilla/firefox/txwhf7mb.default-release
+printf '[Install11457493C5A56847]\nDefault=txwhf7mb.default-release\nLocked=1\n' \
+    > "$d/home/.mozilla/firefox/installs.ini"
+add_profile "$d" .config/mozilla/firefox/jidixcko.default-release false
+system_default "$d" usr/lib64/firefox/browser/defaults/preferences/firefox-redhat-default-prefs.js true
+run "$d" yes
+check "Fedora: unset pref shown as on, from the package default" \
+    'grep -q "txwhf7mb.default-release\] (default): *not set → true (system default, firefox-redhat-default-prefs.js)" "$d/out"'
+check "Fedora: profile already on by default not edited" \
+    '[[ ! -e "$d/home/.mozilla/firefox/txwhf7mb.default-release/prefs.js.pipewire-browser-camera-fix.bak" ]]'
+check "XDG profile marked not used while ~/.mozilla exists" 'grep -q "jidixcko.default-release\]: *false — not used" "$d/out"'
+check "unused XDG profile not edited" '[[ "$(pref_in "$d" .config/mozilla/firefox/jidixcko.default-release)" == false ]]'
+check "says which folder Firefox reads" 'grep -q "reads its profiles from ~/.mozilla/firefox" "$d/out"'
+check "nothing recorded" '[[ -z "$(state_of "$d")" ]]'
+
+d=$(new_env)
+add_profile "$d" .config/mozilla/firefox/xyz.default-release false
+run "$d" yes
+check "no ~/.mozilla: XDG profile is the one used, and turned on" \
+    '[[ "$(pref_in "$d" .config/mozilla/firefox/xyz.default-release)" == true ]]'
+check "no ~/.mozilla: not marked unused" '! grep -q "not used" "$d/out"'
+
+d=$(new_env)
+add_profile "$d" .mozilla/firefox/abc.default-release
+run "$d" yes
+check "no package default: unset shown as Firefox default false" 'grep -q "not set → false (Firefox default)" "$d/out"'
+check "no package default: unset pref turned on" '[[ "$(pref_in "$d" .mozilla/firefox/abc.default-release)" == true ]]'
+
+d=$(new_env)
+add_profile "$d" .var/app/org.mozilla.firefox/.mozilla/firefox/fp.default-release
+system_default "$d" usr/lib64/firefox/browser/defaults/preferences/firefox-redhat-default-prefs.js true
+run "$d" yes
+check "Flatpak: the native package's default doesn't apply" \
+    '[[ "$(pref_in "$d" .var/app/org.mozilla.firefox/.mozilla/firefox/fp.default-release)" == true ]]'
+
+d=$(new_env)
+add_profile "$d" .mozilla/firefox/abc.default-release
+echo 'user_pref("media.webrtc.camera.allow-pipewire", false);' > "$d/home/.mozilla/firefox/abc.default-release/user.js"
+run "$d" yes
+check "user.js wins: shown as such" 'grep -q "false (set in user.js" "$d/out"'
+check "user.js wins: prefs.js not edited" '[[ -z "$(pref_in "$d" .mozilla/firefox/abc.default-release)" ]]'
+check "user.js wins: told to edit it by hand" 'grep -q "Edit that user.js line by hand" "$d/out"'
+
+d=$(new_env)
+add_profile "$d" .mozilla/firefox/old.default true
+add_profile "$d" .mozilla/firefox/new.default true
+printf '[Profile1]\nName=old\nIsRelative=1\nPath=old.default\n\n[Profile0]\nName=new\nIsRelative=1\nPath=new.default\nDefault=1\n\n[General]\nVersion=2\n' \
+    > "$d/home/.mozilla/firefox/profiles.ini"
+run "$d" check
+check "no installs.ini: default from profiles.ini Default=1" 'grep -q "\[new.default\] (default):" "$d/out"'
+check "no installs.ini: other profile not marked default" '! grep -q "\[old.default\] (default)" "$d/out"'
 
 # ── 4. Chrome flag ────────────────────────────────────────────────────────────
 echo
