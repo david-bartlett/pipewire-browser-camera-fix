@@ -7,7 +7,7 @@ It checks the three things those browsers need on the PipeWire camera path, show
 | Check | What it looks at | Fix |
 |---|---|---|
 | Chrome / Chromium flag | `chrome://flags/#enable-webrtc-pipewire-camera` in each profile | Turns it on, using `chromium-pipewire-camera` if it's installed ([below](#the-chrome-flag)) |
-| Firefox pref | `media.webrtc.camera.allow-pipewire` in each profile's `prefs.js` (native, snap, Flatpak) | Turns it on for normal and Flatpak Firefox, and **off for snap Firefox**, which crashes on the PipeWire camera ([below](#snap-firefox)). Firefox must be closed; it keeps a backup of `prefs.js` |
+| Firefox pref | `media.webrtc.camera.allow-pipewire` in each profile's `prefs.js` (native, snap, Flatpak) | Turns it on for normal and Flatpak Firefox, and **off for snap Firefox**, which crashes on the PipeWire camera ([below](#snap-firefox)). Firefox must be closed; it keeps a backup of `prefs.js`. Only the profiles Firefox actually uses are changed ([below](#which-firefox-profiles)) |
 | Portal camera permission | The xdg-desktop-portal permission store, for the browsers GNOME can't show the camera dialog for | Allows those browsers to use the camera without the dialog. The browser still asks you per site |
 
 Everything it changes is recorded, and `--undo` puts it back.
@@ -92,6 +92,14 @@ Ubuntu's snap Firefox crashes when a site asks for the camera with the PipeWire 
 
 Nothing outside the snap can fix that, so the script leaves the pref off there (and turns it off if it's on). Snap Firefox then opens the camera directly as a V4L2 device: a USB webcam, or Camera Relay's loopback device for a libcamera laptop camera. Ubuntu tracks snap Firefox and PipeWire cameras as [LP#2136591](https://bugs.launchpad.net/bugs/2136591). Normal and Flatpak Firefox aren't affected.
 
+## Which Firefox profiles
+
+The script lists every profile it finds and marks the one Firefox opens by default (from `installs.ini`, or `profiles.ini` on older setups). It leaves some profiles alone:
+
+- **Profiles Firefox doesn't use.** Since Firefox 147, new profiles go in `~/.config/mozilla/firefox`, but only when `~/.mozilla` doesn't exist. While it does, Firefox keeps using `~/.mozilla/firefox` and never reads `~/.config/mozilla`. Profiles there are shown as "not used" and not changed. Flatpak Firefox works the same way inside `~/.var/app/org.mozilla.firefox`.
+- **Profiles that are already on through the package's own default.** Fedora's Firefox package turns the pref on in `firefox-redhat-default-prefs.js`, so a profile without the line is already on. The script reads the defaults a native Firefox package ships and shows, for example, `not set → true (system default, firefox-redhat-default-prefs.js)`.
+- **Profiles with a `user.js` that sets the pref.** Firefox applies `user.js` at every start, over `prefs.js`, so the script says so and leaves that line for you to change.
+
 ## What it changes
 
 - **Portal:** a "yes" for each browser ID you agree to, stored in the portal's permission store (`devices` / `camera`).
@@ -118,4 +126,4 @@ Changes made before the project was renamed are in `~/.local/state/browser-camer
 ./tests/test-pipewire-browser-camera-fix.sh
 ```
 
-These need no browser, portal or session bus. They cover the app IDs, stored decisions, Firefox profiles (including Firefox running), the Chrome flag, `--check` and `--undo`.
+These need no browser, portal or session bus. They cover the app IDs, stored decisions, Firefox profiles (including Firefox running, profiles Firefox doesn't use, package defaults and `user.js`), the Chrome flag, `--check` and `--undo`.
