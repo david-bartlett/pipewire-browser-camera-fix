@@ -1,0 +1,1 @@
+# pipewire-browser-camera-fix
