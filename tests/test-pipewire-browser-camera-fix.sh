@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Tests for browser-camera-fix.sh.
+# Tests for pipewire-browser-camera-fix.sh.
 #
 # What matters, and is easy to break silently:
 #   1. Portal app IDs are the ones the portal really uses (Chrome's own scope
@@ -10,12 +10,12 @@
 #   4. --undo puts back exactly what the script changed, and nothing else.
 #   5. --check changes nothing.
 #
-# Usage: ./test-browser-camera-fix.sh
+# Usage: ./test-pipewire-browser-camera-fix.sh
 # Needs no browser, portal or session bus, and touches no system state.
 
 set -uo pipefail
 
-SCRIPT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)/browser-camera-fix.sh"
+SCRIPT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)/pipewire-browser-camera-fix.sh"
 PASS=0
 FAIL=0
 
@@ -28,7 +28,7 @@ extract_fn() { sed -n "/^$1()/,/^}/p" "$SCRIPT"; }
 TMP=$(mktemp -d)
 trap 'rm -rf "$TMP"' EXIT
 
-echo "test-browser-camera-fix ($SCRIPT)"
+echo "test-pipewire-browser-camera-fix ($SCRIPT)"
 
 # ── Harness ───────────────────────────────────────────────────────────────────
 # A fake home, a fake permission store behind a busctl stub ("ID PERM" lines),
@@ -109,7 +109,7 @@ run() {
         unset XDG_STATE_HOME
         # shellcheck disable=SC2034  # read by the evaluated functions
         MODE="$mode"
-        eval "$(sed -n '/^SCRIPT_DIR=/,/^PORTAL_STORE_PATH=/p' "$SCRIPT")"
+        eval "$(sed -n '/^STATE_FILE=/,/^PORTAL_STORE_PATH=/p' "$SCRIPT")"
         for fn in section answer_yes ask ask_always record portal_store portal_camera_entries \
                   portal_camera_state running_chromium_scope_ids firefox_prefs_files \
                   firefox_pref_value firefox_running firefox_set_pref profile_label snap_profile \
@@ -128,7 +128,7 @@ run() {
     ) < /dev/null > "$d/out" 2>&1
     echo $? > "$d/rc"
 }
-state_of() { cat "$1/home/.local/state/browser-camera-fix/changes" 2>/dev/null; }
+state_of() { cat "$1/home/.local/state/pipewire-browser-camera-fix/changes" 2>/dev/null; }
 
 # ── 1. Portal app IDs ─────────────────────────────────────────────────────────
 echo
@@ -186,8 +186,8 @@ check "snap profile not turned on (snap Firefox crashes on PipeWire)" '[[ -z "$(
 check "snap: says why the pref stays off" 'grep -q "Snap Firefox crashes on the PipeWire camera" "$d/out"'
 check "only one pref line left" '[[ $(grep -c allow-pipewire "$d/home/.mozilla/firefox/abc.default-release/prefs.js") == 1 ]]'
 check "other prefs kept" 'grep -q "browser.startup.page" "$d/home/.mozilla/firefox/abc.default-release/prefs.js"'
-check "backup made" '[[ -f "$d/home/.mozilla/firefox/abc.default-release/prefs.js.browser-camera-fix.bak" ]]'
-check "profile already on not touched" '[[ ! -e "$d/home/.config/mozilla/firefox/ghi.default/prefs.js.browser-camera-fix.bak" ]]'
+check "backup made" '[[ -f "$d/home/.mozilla/firefox/abc.default-release/prefs.js.pipewire-browser-camera-fix.bak" ]]'
+check "profile already on not touched" '[[ ! -e "$d/home/.config/mozilla/firefox/ghi.default/prefs.js.pipewire-browser-camera-fix.bak" ]]'
 check "previous value recorded" 'grep -q "abc.default-release/prefs.js false" <<< "$(state_of "$d")"'
 check "untouched snap profile not recorded" '! grep -q "def.default" <<< "$(state_of "$d")"'
 
@@ -249,7 +249,7 @@ printf '  Google Chrome:       not set\n' > "$d/flag-status"
 run "$d" yes
 # A "no" the script changed after asking, simulated in the state file.
 store_set "$d" org.chromium.Chromium yes
-echo "portal-was-no org.chromium.Chromium" >> "$d/home/.local/state/browser-camera-fix/changes"
+echo "portal-was-no org.chromium.Chromium" >> "$d/home/.local/state/pipewire-browser-camera-fix/changes"
 run "$d" undo
 check "portal grants removed" '[[ -z "$(perm_of "$d" com.google.Chrome)$(perm_of "$d" snap.firefox)" ]]'
 check "a \"no\" it changed is a \"no\" again" '[[ "$(perm_of "$d" org.chromium.Chromium)" == no ]]'
@@ -262,6 +262,15 @@ check "state file removed" '[[ -z "$(state_of "$d")" ]]'
 d=$(new_env)
 run "$d" undo
 check "--undo with nothing recorded says so" 'grep -q "Nothing to undo" "$d/out"'
+
+# Changes recorded before the rename live under browser-camera-fix/.
+d=$(new_env)
+store_set "$d" com.google.Chrome yes
+mkdir -p "$d/home/.local/state/browser-camera-fix"
+echo "portal com.google.Chrome" > "$d/home/.local/state/browser-camera-fix/changes"
+run "$d" undo
+check "--undo reads the pre-rename state file" '[[ -z "$(perm_of "$d" com.google.Chrome)" ]]'
+check "pre-rename state file removed" '[[ ! -e "$d/home/.local/state/browser-camera-fix/changes" ]]'
 
 # Enter alone: yes for the fixes the script is run for, no for removing a stored "no".
 eval "$(extract_fn answer_yes)"
