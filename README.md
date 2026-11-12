@@ -1,4 +1,4 @@
-# Pipewire Browser Camera Fix
+# PipeWire Browser Camera Fix
 
 A script to run when the webcam works in other apps but not in **Chrome, Chromium or Firefox**: no camera listed, or the page stuck at **"Waiting for your permission"** with no prompt.
 
@@ -6,26 +6,43 @@ It checks the three things those browsers need on the PipeWire camera path, show
 
 | Check | What it looks at | Fix |
 |---|---|---|
-| Chrome / Chromium flag | `chrome://flags/#enable-webrtc-pipewire-camera` in each profile | Turns it on, using `chromium-pipewire-camera` from camera-relay |
+| Chrome / Chromium flag | `chrome://flags/#enable-webrtc-pipewire-camera` in each profile | Turns it on, using `chromium-pipewire-camera` if it's installed ([below](#the-chrome-flag)) |
 | Firefox pref | `media.webrtc.camera.allow-pipewire` in each profile's `prefs.js` (native, snap, Flatpak) | Turns it on for normal and Flatpak Firefox, and **off for snap Firefox**, which crashes on the PipeWire camera ([below](#snap-firefox)). Firefox must be closed; it keeps a backup of `prefs.js` |
 | Portal camera permission | The xdg-desktop-portal permission store, for the browsers GNOME can't show the camera dialog for | Allows those browsers to use the camera without the dialog. The browser still asks you per site |
 
 Everything it changes is recorded, and `--undo` puts it back.
+
+## Who it's for
+
+Anyone whose browser gets the webcam through PipeWire and xdg-desktop-portal. That's the usual route for laptop cameras run by libcamera (Intel IPU6 and IPU7), and for any webcam once a browser's PipeWire camera option is on.
+
+It started as a companion to Andy's [Samsung Galaxy Book Linux fixes](https://github.com/Andycodeman/samsung-galaxy-book-linux-fixes), whose `webcam-fix-book5` and `webcam-fix-libcamera` set up the camera and Camera Relay. It doesn't need them, but it uses one of their tools for the Chrome flag when it's there.
+
+## Get it
+
+```bash
+git clone https://github.com/david-bartlett/pipewire-browser-camera-fix.git
+cd pipewire-browser-camera-fix
+```
 
 ## Usage
 
 Run it as yourself, not with `sudo`:
 
 ```bash
-./browser-camera-fix.sh            # check, then ask before each change
-./browser-camera-fix.sh --check    # check only, change nothing
-./browser-camera-fix.sh --yes      # make the changes without asking
-./browser-camera-fix.sh --undo     # put back what it changed
+./pipewire-browser-camera-fix.sh            # check, then ask before each change
+./pipewire-browser-camera-fix.sh --check    # check only, change nothing
+./pipewire-browser-camera-fix.sh --yes      # make the changes without asking
+./pipewire-browser-camera-fix.sh --undo     # put back what it changed
 ```
 
-Then quit each browser completely and reopen it **from the app menu, not a terminal**. If there's still no camera, run `camera-relay doctor`.
+Then quit each browser completely and reopen it **from the app menu, not a terminal**. If you use Andy's fixes and there's still no camera, run `camera-relay doctor`.
 
-It needs `busctl`, which comes with systemd. For the Chrome flag it uses `chromium-pipewire-camera`, which `webcam-fix-book5` and `webcam-fix-libcamera` install. Without it, the script tells you to set the flag by hand.
+It needs `busctl`, which comes with systemd.
+
+### The Chrome flag
+
+Chrome keeps its flags in a file it rewrites when it quits, so changing it safely takes care. For that the script uses `chromium-pipewire-camera`, which comes with Camera Relay in Andy's fixes. If that isn't installed, the script can't check the flag and tells you to set it by hand: open `chrome://flags/#enable-webrtc-pipewire-camera`, set it to **Enabled**, then fully quit and reopen Chrome.
 
 ## Why "Waiting for your permission"
 
@@ -73,24 +90,32 @@ Ubuntu's snap Firefox crashes when a site asks for the camera with the PipeWire 
 [E] pw.loop [loop.c:67 pw_loop_new()] …: can't make support.system handle: No such file or directory
 ```
 
-Nothing outside the snap can fix that, so the script leaves the pref off there (and turns it off if it's on). Snap Firefox then uses the V4L2 camera, which Camera Relay's loopback device provides. Ubuntu tracks snap Firefox and PipeWire cameras as [LP#2136591](https://bugs.launchpad.net/bugs/2136591). Normal and Flatpak Firefox aren't affected.
+Nothing outside the snap can fix that, so the script leaves the pref off there (and turns it off if it's on). Snap Firefox then opens the camera directly as a V4L2 device: a USB webcam, or Camera Relay's loopback device for a libcamera laptop camera. Ubuntu tracks snap Firefox and PipeWire cameras as [LP#2136591](https://bugs.launchpad.net/bugs/2136591). Normal and Flatpak Firefox aren't affected.
 
 ## What it changes
 
 - **Portal:** a "yes" for each browser ID you agree to, stored in the portal's permission store (`devices` / `camera`).
-- **Firefox:** the `media.webrtc.camera.allow-pipewire` line in `prefs.js` (on, or off in snap Firefox). The first time it edits a profile it saves `prefs.js.browser-camera-fix.bak` next to it.
+- **Firefox:** the `media.webrtc.camera.allow-pipewire` line in `prefs.js` (on, or off in snap Firefox). The first time it edits a profile it saves `prefs.js.pipewire-browser-camera-fix.bak` next to it.
 - **Chrome / Chromium:** the PipeWire camera flag, through `chromium-pipewire-camera`.
 
-The list of changes is kept in `~/.local/state/browser-camera-fix/changes`. `--undo` reads it:
+The list of changes is kept in `~/.local/state/pipewire-browser-camera-fix/changes`. `--undo` reads it:
 - it removes the portal permissions it added;
 - it puts a "no" it changed back to "no";
 - it restores each Firefox pref to its previous value;
 - it turns the Chrome flag off again if the script was what turned it on.
 
+Changes made before the project was renamed are in `~/.local/state/browser-camera-fix/changes`; `--undo` reads that too.
+
+## Where it's been checked
+
+- **CachyOS (GNOME, Chrome 157):** the "Waiting for your permission" hang, and storing the portal permission fixes it.
+- **Ubuntu 26.04 (GNOME):** the same hang with Chrome; snap Firefox crashing with the PipeWire pref on.
+- **Debian 13 (KDE):** Chrome and Firefox work with nothing changed.
+
 ## Tests
 
 ```bash
-./tests/test-browser-camera-fix.sh
+./tests/test-pipewire-browser-camera-fix.sh
 ```
 
 These need no browser, portal or session bus. They cover the app IDs, stored decisions, Firefox profiles (including Firefox running), the Chrome flag, `--check` and `--undo`.

@@ -1,13 +1,15 @@
 #!/usr/bin/env bash
-# browser-camera-fix.sh — get the camera working again in Chrome, Chromium and
-# Firefox when they use it through PipeWire.
+# pipewire-browser-camera-fix.sh — get the camera working again in Chrome,
+# Chromium and Firefox when they use it through PipeWire.
+# https://github.com/david-bartlett/pipewire-browser-camera-fix
 #
 # Checks three things and, with your OK, fixes them:
 #
 #   1. Chrome / Chromium PipeWire camera flag
 #      (chrome://flags/#enable-webrtc-pipewire-camera). Done through
-#      chromium-pipewire-camera from camera-relay, which webcam-fix-book5 and
-#      webcam-fix-libcamera install.
+#      chromium-pipewire-camera when it's installed (it comes with camera-relay
+#      from Andycodeman/samsung-galaxy-book-linux-fixes); otherwise the script
+#      says how to set the flag by hand.
 #   2. Firefox PipeWire camera pref (media.webrtc.camera.allow-pipewire): on,
 #      except in snap Firefox, which crashes on the PipeWire camera, so there
 #      it's turned off.
@@ -17,7 +19,7 @@
 #      user journal shows "Only the focused app is allowed to show a system
 #      access dialog".
 #
-# Usage: browser-camera-fix.sh [--check | --yes | --undo]
+# Usage: pipewire-browser-camera-fix.sh [--check | --yes | --undo]
 #
 #   (none)    check, then ask before each change
 #   --check   check only, change nothing
@@ -30,10 +32,11 @@
 
 set -uo pipefail
 
-SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-STATE_FILE="${XDG_STATE_HOME:-$HOME/.local/state}/browser-camera-fix/changes"
+STATE_FILE="${XDG_STATE_HOME:-$HOME/.local/state}/pipewire-browser-camera-fix/changes"
+# Before the rename, changes were recorded here; --undo still reads it.
+LEGACY_STATE_FILE="${XDG_STATE_HOME:-$HOME/.local/state}/browser-camera-fix/changes"
 FF_PREF="media.webrtc.camera.allow-pipewire"
-FF_BACKUP_SUFFIX=".browser-camera-fix.bak"
+FF_BACKUP_SUFFIX=".pipewire-browser-camera-fix.bak"
 
 PORTAL_STORE="org.freedesktop.impl.portal.PermissionStore"
 PORTAL_STORE_PATH="/org/freedesktop/impl/portal/PermissionStore"
@@ -234,11 +237,13 @@ profile_label() {
 
 # ── Chrome / Chromium flag ────────────────────────────────────────────────────
 
+# chromium-pipewire-camera comes with camera-relay
+# (Andycodeman/samsung-galaxy-book-linux-fixes), installed to /usr/local/bin.
 chromium_flag_tool() {
     if [[ -x /usr/local/bin/chromium-pipewire-camera ]]; then
         echo /usr/local/bin/chromium-pipewire-camera
-    elif [[ -x "$SCRIPT_DIR/../../camera-relay/chromium-pipewire-camera.sh" ]]; then
-        echo "$SCRIPT_DIR/../../camera-relay/chromium-pipewire-camera.sh"
+    elif command -v chromium-pipewire-camera &>/dev/null; then
+        command -v chromium-pipewire-camera
     else
         return 1
     fi
@@ -263,9 +268,9 @@ check_chromium_flag() {
     section "Chrome / Chromium PipeWire camera flag"
     local tool status
     if ! tool=$(chromium_flag_tool); then
-        echo "  chromium-pipewire-camera not found (camera-relay installs it)."
-        echo "  Set chrome://flags/#enable-webrtc-pipewire-camera to Enabled by hand,"
-        echo "  then fully quit and reopen the browser."
+        echo "  Can't check this one: chromium-pipewire-camera isn't installed (it comes"
+        echo "  with camera-relay). Open chrome://flags/#enable-webrtc-pipewire-camera,"
+        echo "  set it to Enabled, then fully quit and reopen the browser."
         return 0
     fi
     status=$("$tool" status 2>&1) || true
@@ -407,6 +412,9 @@ check_portal() {
 }
 
 undo_changes() {
+    if [[ ! -s "$STATE_FILE" && -s "$LEGACY_STATE_FILE" ]]; then
+        STATE_FILE="$LEGACY_STATE_FILE"
+    fi
     if [[ ! -s "$STATE_FILE" ]]; then
         echo "Nothing to undo — this script hasn't changed anything."
         return 0
@@ -456,7 +464,7 @@ undo_changes() {
 
 # ── Main ──────────────────────────────────────────────────────────────────────
 
-echo "browser-camera-fix — Chrome, Chromium and Firefox on the PipeWire camera path"
+echo "pipewire-browser-camera-fix — Chrome, Chromium and Firefox on the PipeWire camera path"
 
 if [[ "$MODE" == "undo" ]]; then
     undo_changes
@@ -475,6 +483,8 @@ else
     echo "Done. Quit each browser completely and reopen it from the app menu"
     echo "(not from a terminal — a browser started from a terminal can take the"
     echo "terminal's identity, and GNOME refuses the portal dialog for it)."
-    echo "Still no camera? Run: camera-relay doctor"
+    if command -v camera-relay &>/dev/null; then
+        echo "Still no camera? Run: camera-relay doctor"
+    fi
     echo "To put back what this script changed: $0 --undo"
 fi
