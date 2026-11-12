@@ -119,6 +119,8 @@ Changes made before the project was renamed are in `~/.local/state/browser-camer
 - **CachyOS (GNOME, Chrome 157):** the "Waiting for your permission" hang, and storing the portal permission fixes it.
 - **Ubuntu 26.04 (GNOME):** the same hang with Chrome; snap Firefox crashing with the PipeWire pref on.
 - **Debian 13 (KDE):** Chrome and Firefox work with nothing changed.
+- **EndeavourOS (GNOME):** the script fixes it; the camera then works in Chrome and Firefox.
+- **Fedora 45 (KDE):** the Firefox check, with an unused profile in `~/.config/mozilla` (skipped) and Fedora's package default turning the pref on.
 
 ## Tests
 
