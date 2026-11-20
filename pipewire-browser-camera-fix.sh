@@ -6,10 +6,10 @@
 # Checks three things and, with your OK, fixes them:
 #
 #   1. Chrome / Chromium PipeWire camera flag
-#      (chrome://flags/#enable-webrtc-pipewire-camera). Done through
-#      chromium-pipewire-camera when it's installed (it comes with camera-relay
-#      from Andycodeman/samsung-galaxy-book-linux-fixes); otherwise the script
-#      says how to set the flag by hand.
+#      (chrome://flags/#enable-webrtc-pipewire-camera) in every Chrome-family
+#      profile: native, snap and Flatpak Chrome, Chromium, Brave, Vivaldi, Opera.
+#      Edited directly in each profile's "Local State", never while that browser
+#      runs. A flag you set to Disabled yourself is only changed if you say so.
 #   2. Firefox PipeWire camera pref (media.webrtc.camera.allow-pipewire): on,
 #      except in snap Firefox, which crashes on the PipeWire camera, so there
 #      it's turned off.
@@ -37,6 +37,9 @@ STATE_FILE="${XDG_STATE_HOME:-$HOME/.local/state}/pipewire-browser-camera-fix/ch
 LEGACY_STATE_FILE="${XDG_STATE_HOME:-$HOME/.local/state}/browser-camera-fix/changes"
 FF_PREF="media.webrtc.camera.allow-pipewire"
 FF_BACKUP_SUFFIX=".pipewire-browser-camera-fix.bak"
+# Chrome's name for the flag; "@1" is Enabled, "@2" Disabled in Local State.
+CHROME_FLAG="enable-webrtc-pipewire-camera"
+CHROME_BACKUP_SUFFIX=".pipewire-browser-camera-fix.bak"
 
 PORTAL_STORE="org.freedesktop.impl.portal.PermissionStore"
 PORTAL_STORE_PATH="/org/freedesktop/impl/portal/PermissionStore"
@@ -304,8 +307,102 @@ profile_label() {
 
 # ── Chrome / Chromium flag ────────────────────────────────────────────────────
 
-# chromium-pipewire-camera comes with camera-relay
-# (Andycodeman/samsung-galaxy-book-linux-fixes), installed to /usr/local/bin.
+# Every Chrome-family profile folder (the one holding "Local State"), as
+# "label<TAB>folder": native (~/.config), snap and Flatpak.
+chrome_profiles() {
+    local root name dir kind label
+    local -a names=(google-chrome google-chrome-beta google-chrome-unstable chromium
+                    BraveSoftware/Brave-Browser vivaldi opera opera-beta opera-developer)
+    local -A seen=()
+    for root in "${XDG_CONFIG_HOME:-$HOME/.config}" "$HOME"/snap/*/current/.config "$HOME"/.var/app/*/config; do
+        [[ -d "$root" ]] || continue
+        case "$root" in
+            "$HOME"/snap/*)     kind=" (snap)" ;;
+            "$HOME"/.var/app/*) kind=" (flatpak)" ;;
+            *)                  kind="" ;;
+        esac
+        for name in "${names[@]}"; do
+            dir="$root/$name"
+            [[ -f "$dir/Local State" ]] || continue
+            # A snap's "current" links to a revision: report each profile once.
+            dir=$(cd "$dir" 2>/dev/null && pwd -P) || continue
+            [[ -n "${seen[$dir]:-}" ]] && continue
+            seen[$dir]=1
+            case "$name" in
+                google-chrome)               label="Google Chrome" ;;
+                google-chrome-beta)          label="Google Chrome Beta" ;;
+                google-chrome-unstable)      label="Google Chrome Dev" ;;
+                chromium)                    label="Chromium" ;;
+                BraveSoftware/Brave-Browser) label="Brave" ;;
+                vivaldi)                     label="Vivaldi" ;;
+                opera*)                      label="Opera${name#opera}" ;;
+            esac
+            printf '%s%s\t%s\n' "$label" "$kind" "$dir"
+        done
+    done
+    return 0
+}
+
+# Is the browser using this profile running? Chrome rewrites Local State when it
+# quits, so an edit made while it runs is lost. SingletonLock links to
+# "host-pid"; a Flatpak browser's pid is from inside its sandbox, so ask flatpak.
+chrome_running() {
+    local dir="$1" target pid app running
+    if [[ "$dir" == "$HOME"/.var/app/* ]]; then
+        app=${dir#"$HOME"/.var/app/}
+        app=${app%%/*}
+        if command -v flatpak &>/dev/null; then
+            running=$(flatpak ps --columns=application 2>/dev/null) || running=""
+            grep -qxF "$app" <<< "$running"
+            return
+        fi
+        [[ -L "$dir/SingletonLock" ]]
+        return
+    fi
+    target=$(readlink "$dir/SingletonLock" 2>/dev/null) || return 1
+    pid=${target##*-}
+    [[ "$pid" =~ ^[0-9]+$ ]] && kill -0 "$pid" 2>/dev/null
+}
+
+# Read or change the flag in one profile's Local State.
+#   chrome_flag DIR status       -> ENABLED, DISABLED or "not set"
+#   chrome_flag DIR set 1|2      -> Enabled / Disabled
+#   chrome_flag DIR remove       -> back to Default
+# Only browser.enabled_labs_experiments is touched; the file is replaced
+# atomically and keeps its permissions.
+chrome_flag() {
+    python3 - "$1/Local State" "$CHROME_FLAG" "$2" "${3:-}" <<'EOF_PY'
+import json, os, re, sys, tempfile
+path, flag, action, value = sys.argv[1:5]
+with open(path, encoding="utf-8") as f:
+    data = json.load(f)
+browser = data.get("browser") if isinstance(data.get("browser"), dict) else {}
+labs = browser.get("enabled_labs_experiments")
+labs = labs if isinstance(labs, list) else []
+mine = re.compile("^" + re.escape(flag) + r"(@\d+)?$")
+hits = [x for x in labs if isinstance(x, str) and mine.match(x)]
+rest = [x for x in labs if not (isinstance(x, str) and mine.match(x))]
+if action == "status":
+    print("DISABLED" if any(x.endswith("@2") for x in hits) else ("ENABLED" if hits else "not set"))
+    sys.exit(0)
+new = rest + ([flag + "@" + value] if action == "set" else [])
+if new:
+    browser["enabled_labs_experiments"] = new
+else:
+    browser.pop("enabled_labs_experiments", None)
+if browser:
+    data["browser"] = browser
+fd, tmp = tempfile.mkstemp(dir=os.path.dirname(path), prefix=".Local State.")
+with os.fdopen(fd, "w", encoding="utf-8") as f:
+    json.dump(data, f, separators=(",", ":"), ensure_ascii=False)
+os.chmod(tmp, os.stat(path).st_mode & 0o7777)
+os.replace(tmp, path)
+EOF_PY
+}
+
+# Older versions changed the flag through chromium-pipewire-camera (camera-relay
+# from Andycodeman/samsung-galaxy-book-linux-fixes) and recorded "chrome-flag";
+# --undo still hands those back to it.
 chromium_flag_tool() {
     if [[ -x /usr/local/bin/chromium-pipewire-camera ]]; then
         echo /usr/local/bin/chromium-pipewire-camera
@@ -333,30 +430,63 @@ check_environment() {
 
 check_chromium_flag() {
     section "Chrome / Chromium PipeWire camera flag"
-    local tool status
-    if ! tool=$(chromium_flag_tool); then
-        echo "  Can't check this one: chromium-pipewire-camera isn't installed (it comes"
-        echo "  with camera-relay). Open chrome://flags/#enable-webrtc-pipewire-camera,"
-        echo "  set it to Enabled, then fully quit and reopen the browser."
-        return 0
-    fi
-    status=$("$tool" status 2>&1) || true
-    if [[ -z "$status" || "$status" == *"No Chromium-family"* ]]; then
+    local -a profiles=() turn_on=() disabled=()
+    local line label dir state
+    mapfile -t profiles < <(chrome_profiles)
+    if (( ${#profiles[@]} == 0 )); then
         echo "  No Chrome or Chromium profile found."
         return 0
     fi
-    sed 's/^ */  /' <<< "$status"
-
-    # Profile lines look like "  Google Chrome:      ENABLED".
-    grep -E ':[[:space:]]' <<< "$status" | grep -qvE 'ENABLED[[:space:]]*$' || return 0
+    if ! command -v python3 &>/dev/null; then
+        echo "  Can't read the profiles without python3. Open"
+        echo "  chrome://flags/#$CHROME_FLAG, set it to Enabled, then fully quit and"
+        echo "  reopen the browser."
+        return 0
+    fi
+    for line in "${profiles[@]}"; do
+        label=${line%%$'\t'*}
+        dir=${line#*$'\t'}
+        state=$(chrome_flag "$dir" status 2>/dev/null) || state="unreadable"
+        printf '  %-20s %s\n' "$label:" "$state"
+        case "$state" in
+            "not set") turn_on+=("$line") ;;
+            DISABLED)  disabled+=("$line") ;;
+        esac
+    done
+    (( ${#turn_on[@]} + ${#disabled[@]} )) || return 0
     [[ "$MODE" == "check" ]] && return 0
 
-    if ask "Enable the PipeWire camera flag in the browsers above?"; then
-        local out
-        out=$("$tool" enable 2>&1) || true
-        sed 's/^ */  /' <<< "$out"
-        grep -q "PipeWire camera flag enabled" <<< "$out" && record "chrome-flag"
+    local -a change=()
+    if (( ${#turn_on[@]} )) && ask "Enable the PipeWire camera flag in the browsers above that don't have it?"; then
+        change+=("${turn_on[@]}")
     fi
+    # Disabled may be a choice someone made: like a stored portal "no", this
+    # always asks, even under --yes.
+    for line in "${disabled[@]}"; do
+        if ask_always "${line%%$'\t'*} has the flag set to Disabled. Enable it?"; then
+            change+=("$line")
+        fi
+    done
+
+    local before
+    for line in "${change[@]}"; do
+        label=${line%%$'\t'*}
+        dir=${line#*$'\t'}
+        if chrome_running "$dir"; then
+            echo "  ⚠ $label is running. It rewrites its settings when it quits and would"
+            echo "    undo this. Quit it completely (tray icon too), then run this again."
+            continue
+        fi
+        before=$(chrome_flag "$dir" status 2>/dev/null) || before=""
+        [[ -e "$dir/Local State$CHROME_BACKUP_SUFFIX" ]] \
+            || cp -p "$dir/Local State" "$dir/Local State$CHROME_BACKUP_SUFFIX" 2>/dev/null || true
+        if chrome_flag "$dir" set 1 2>/dev/null; then
+            record "chrome ${before// /-} $dir"
+            echo "  ✓ $label: flag enabled (backup: Local State$CHROME_BACKUP_SUFFIX)"
+        else
+            echo "  ⚠ $label: could not update Local State"
+        fi
+    done
 }
 
 # Snap Firefox can't use PipeWire cameras: inside the snap, its PipeWire library
@@ -554,7 +684,7 @@ undo_changes() {
         echo "Nothing to undo — this script hasn't changed anything."
         return 0
     fi
-    local kind rest entries="" id prefs prev tool keep=()
+    local kind rest entries="" id prefs prev tool dir keep=()
     entries=$(portal_camera_entries) || entries=""
 
     while IFS=' ' read -r kind rest; do
@@ -582,7 +712,23 @@ undo_changes() {
                 fi
                 firefox_set_pref "$prefs" "$prev" \
                     && echo "  ✓ $(profile_label "$prefs"): pref back to ${prev}" ;;
+            chrome)
+                # "chrome <state before> <profile folder>"
+                prev="${rest%% *}"
+                dir="${rest#* }"
+                [[ -f "$dir/Local State" ]] || continue
+                if chrome_running "$dir"; then
+                    echo "  ⚠ The browser using ${dir/#$HOME/\~} is running — quit it and run --undo again"
+                    keep+=("$kind $rest")
+                    continue
+                fi
+                case "$prev" in
+                    DISABLED) chrome_flag "$dir" set 2 && echo "  ✓ ${dir/#$HOME/\~}: flag back to Disabled" ;;
+                    *)        chrome_flag "$dir" remove && echo "  ✓ ${dir/#$HOME/\~}: flag back to Default" ;;
+                esac
+                rm -f "$dir/Local State$CHROME_BACKUP_SUFFIX" ;;
             chrome-flag)
+                # Recorded by versions that used chromium-pipewire-camera.
                 if tool=$(chromium_flag_tool); then
                     "$tool" disable 2>&1 | sed 's/^ */  /'
                 fi ;;
