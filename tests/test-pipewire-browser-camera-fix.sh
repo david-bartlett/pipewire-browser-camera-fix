@@ -10,6 +10,9 @@
 #      Firefox doesn't use, not ones already on by the package's default, and
 #      not ones where a user.js decides.
 #   4. --undo puts back exactly what the script changed, and nothing else.
+#   6. The Chrome flag is set in Local State directly, never while the browser
+#      runs, never over a Disabled without asking, and --undo restores each
+#      profile's own setting.
 #   5. --check changes nothing.
 #
 # Usage: ./test-pipewire-browser-camera-fix.sh
@@ -34,13 +37,14 @@ echo "test-pipewire-browser-camera-fix ($SCRIPT)"
 
 # ── Harness ───────────────────────────────────────────────────────────────────
 # A fake home, a fake permission store behind a busctl stub ("ID PERM" lines),
-# a fake chromium-pipewire-camera, and a PATH holding only the stubs plus the
+# a fake chromium-pipewire-camera (only for old "chrome-flag" records), fake
+# Chrome profiles (Local State files), and a PATH holding only the stubs plus the
 # real tools the script uses — so this machine's own browsers can't leak in.
 new_env() {
     local d="$TMP/env-$RANDOM$RANDOM" tool
     mkdir -p "$d/bin" "$d/home" "$d/proc" "$d/snap"
     : > "$d/store"
-    for tool in grep sort head tail readlink mkdir rm rmdir cat sed wc mv cp mktemp chmod tr awk; do
+    for tool in grep sort head tail readlink mkdir rm rmdir cat sed wc mv cp mktemp chmod tr awk python3 ln; do
         ln -s "$(command -v "$tool")" "$d/bin/$tool"
     done
     cat > "$d/bin/busctl" <<EOF
@@ -83,6 +87,13 @@ EOF
 }
 
 add_bin()   { printf '#!%s\n' "$BASH" > "$1/bin/$2"; chmod +x "$1/bin/$2"; }
+# add_chrome ENV RELDIR 'JSON list of enabled_labs_experiments'
+add_chrome() {
+    mkdir -p "$1/home/$2"
+    printf '{"browser":{"enabled_labs_experiments":%s},"other":{"keep":1}}' "${3:-[]}" > "$1/home/$2/Local State"
+}
+labs_of() { python3 -c 'import json,sys; print(" ".join(json.load(open(sys.argv[1])).get("browser",{}).get("enabled_labs_experiments",[])))' "$1/home/$2/Local State"; }
+other_kept() { python3 -c 'import json,sys; sys.exit(json.load(open(sys.argv[1])).get("other") != {"keep":1})' "$1/home/$2/Local State"; }
 add_snap()  { mkdir -p "$1/snap/$2/current"; }
 store_set() { echo "$2 $3" >> "$1/store"; }
 perm_of()   { awk -v id="$2" '$1 == id { print $2 }' "$1/store"; }
@@ -124,6 +135,7 @@ run() {
                   firefox_pref_value firefox_running firefox_set_pref profile_label snap_profile \
                   flatpak_profile firefox_unused_profile firefox_default_profile \
                   firefox_system_default firefox_user_js_value firefox_status_label \
+                  chrome_profiles chrome_running chrome_flag \
                   check_environment check_chromium_flag check_firefox_pref check_portal \
                   undo_changes; do
             eval "$(extract_fn "$fn")"
@@ -278,16 +290,52 @@ check "no installs.ini: other profile not marked default" '! grep -q "\[old.defa
 # ── 4. Chrome flag ────────────────────────────────────────────────────────────
 echo
 echo "Chrome / Chromium flag"
+G=.config/google-chrome
 
 d=$(new_env)
+add_chrome "$d" "$G" '["enable-webrtc-pipewire-camera@1"]'
 run "$d" yes
-check "all ENABLED: enable not called" '! grep -qx enable "$d/flag-calls"'
+check "already ENABLED: nothing recorded" '[[ -z "$(state_of "$d")" ]]'
+check "already ENABLED: no backup made" '[[ ! -e "$d/home/$G/Local State.pipewire-browser-camera-fix.bak" ]]'
 
 d=$(new_env)
-printf '  Google Chrome:       not set\n  Chromium:            ENABLED\n' > "$d/flag-status"
+add_chrome "$d" "$G" '["other-flag@1"]'
+add_chrome "$d" .config/BraveSoftware/Brave-Browser '[]'
 run "$d" yes
-check "one not set: enable called" 'grep -qx enable "$d/flag-calls"'
-check "chrome-flag recorded" 'grep -qx chrome-flag <<< "$(state_of "$d")"'
+check "not set: flag enabled" '[[ "$(labs_of "$d" "$G")" == "other-flag@1 enable-webrtc-pipewire-camera@1" ]]'
+check "other flags and settings kept" 'other_kept "$d" "$G"'
+check "Brave found and enabled too" '[[ "$(labs_of "$d" .config/BraveSoftware/Brave-Browser)" == "enable-webrtc-pipewire-camera@1" ]]'
+check "recorded with the state before" 'grep -qx "chrome not-set $d/home/$G" <<< "$(state_of "$d")"'
+check "backup made" '[[ -e "$d/home/$G/Local State.pipewire-browser-camera-fix.bak" ]]'
+check "chromium-pipewire-camera not used" '[[ ! -e "$d/flag-calls" ]]'
+
+d=$(new_env)
+add_chrome "$d" "$G" '["enable-webrtc-pipewire-camera@2"]'
+run "$d" yes
+check "Disabled left alone under --yes (no one to ask)" '[[ "$(labs_of "$d" "$G")" == "enable-webrtc-pipewire-camera@2" ]]'
+check "Disabled reported" 'grep -q "Google Chrome: *DISABLED" "$d/out"'
+
+d=$(new_env)
+add_chrome "$d" "$G" '[]'
+ln -s "myhost-$$" "$d/home/$G/SingletonLock"   # this test's own pid: "running"
+run "$d" yes
+check "running browser not touched" '[[ -z "$(labs_of "$d" "$G")" ]]'
+check "running browser: told to quit" 'grep -q "is running" "$d/out"'
+
+d=$(new_env)
+add_chrome "$d" "$G" '[]'
+ln -s "myhost-999999999" "$d/home/$G/SingletonLock"   # stale lock after a crash
+run "$d" yes
+check "stale lock: flag enabled" '[[ "$(labs_of "$d" "$G")" == "enable-webrtc-pipewire-camera@1" ]]'
+
+d=$(new_env)
+mkdir -p "$d/home/snap/chromium/123/.config"
+ln -s 123 "$d/home/snap/chromium/current"
+add_chrome "$d" snap/chromium/123/.config/chromium '[]'
+add_chrome "$d" .var/app/com.google.Chrome/config/google-chrome '[]'
+run "$d" check
+check "snap Chromium found once" '[[ "$(grep -c "Chromium (snap)" "$d/out")" == 1 ]]'
+check "Flatpak Chrome found" 'grep -q "Google Chrome (flatpak): *not set" "$d/out"'
 
 # ── 5. --check ────────────────────────────────────────────────────────────────
 echo
@@ -296,11 +344,11 @@ echo "--check"
 d=$(new_env)
 add_bin "$d" google-chrome-stable
 add_profile "$d" .mozilla/firefox/abc.default-release false
-printf '  Google Chrome:       not set\n' > "$d/flag-status"
+add_chrome "$d" "$G" '[]'
 run "$d" check
 check "no portal change" '! grep -q SetPermission "$d/calls" 2>/dev/null'
 check "no Firefox change" '[[ "$(pref_in "$d" .mozilla/firefox/abc.default-release)" == false ]]'
-check "no flag change" '! grep -qx enable "$d/flag-calls"'
+check "no flag change" '[[ -z "$(labs_of "$d" "$G")" ]]'
 check "nothing recorded" '[[ -z "$(state_of "$d")" ]]'
 check "unset portal permission reported" 'grep -q "com.google.Chrome: *not set" "$d/out"'
 
@@ -314,8 +362,12 @@ add_snap "$d" firefox
 store_set "$d" org.mozilla.firefox yes
 add_profile "$d" .mozilla/firefox/abc.default-release false
 add_profile "$d" snap/firefox/common/.mozilla/firefox/def.default
-printf '  Google Chrome:       not set\n' > "$d/flag-status"
+add_chrome "$d" "$G" '["other-flag@1"]'
+add_chrome "$d" .config/chromium '["enable-webrtc-pipewire-camera@1"]'
 run "$d" yes
+# A Disabled the script changed after asking, simulated in the state file.
+add_chrome "$d" .config/vivaldi '["enable-webrtc-pipewire-camera@1"]'
+echo "chrome DISABLED $d/home/.config/vivaldi" >> "$d/home/.local/state/pipewire-browser-camera-fix/changes"
 # A "no" the script changed after asking, simulated in the state file.
 store_set "$d" org.chromium.Chromium yes
 echo "portal-was-no org.chromium.Chromium" >> "$d/home/.local/state/pipewire-browser-camera-fix/changes"
@@ -325,12 +377,22 @@ check "a \"no\" it changed is a \"no\" again" '[[ "$(perm_of "$d" org.chromium.C
 check "entry it never added kept" '[[ "$(perm_of "$d" org.mozilla.firefox)" == yes ]]'
 check "Firefox pref back to false" '[[ "$(pref_in "$d" .mozilla/firefox/abc.default-release)" == false ]]'
 check "snap profile still without the pref" '[[ -z "$(pref_in "$d" snap/firefox/common/.mozilla/firefox/def.default)" ]]'
-check "Chrome flag disabled" 'grep -qx disable "$d/flag-calls"'
+check "Chrome flag back to Default" '[[ "$(labs_of "$d" "$G")" == "other-flag@1" ]]'
+check "Chrome backup removed" '[[ ! -e "$d/home/$G/Local State.pipewire-browser-camera-fix.bak" ]]'
+check "flag it didn't set kept (Chromium)" '[[ "$(labs_of "$d" .config/chromium)" == "enable-webrtc-pipewire-camera@1" ]]'
+check "a Disabled it changed is Disabled again" '[[ "$(labs_of "$d" .config/vivaldi)" == "enable-webrtc-pipewire-camera@2" ]]'
 check "state file removed" '[[ -z "$(state_of "$d")" ]]'
 
 d=$(new_env)
 run "$d" undo
 check "--undo with nothing recorded says so" 'grep -q "Nothing to undo" "$d/out"'
+
+# "chrome-flag" recorded by versions that used chromium-pipewire-camera.
+d=$(new_env)
+mkdir -p "$d/home/.local/state/pipewire-browser-camera-fix"
+echo "chrome-flag" > "$d/home/.local/state/pipewire-browser-camera-fix/changes"
+run "$d" undo
+check "old chrome-flag record handed to chromium-pipewire-camera" 'grep -qx disable "$d/flag-calls"'
 
 # Changes recorded before the rename live under browser-camera-fix/.
 d=$(new_env)

@@ -6,7 +6,7 @@ It checks the three things those browsers need on the PipeWire camera path, show
 
 | Check | What it looks at | Fix |
 |---|---|---|
-| Chrome / Chromium flag | `chrome://flags/#enable-webrtc-pipewire-camera` in each profile | Turns it on, using `chromium-pipewire-camera` if it's installed ([below](#the-chrome-flag)) |
+| Chrome / Chromium flag | `chrome://flags/#enable-webrtc-pipewire-camera` in each profile | Turns it on in Chrome, Chromium, Brave, Vivaldi and Opera (native, snap, Flatpak). The browser must be closed; it keeps a backup of `Local State`. A flag you set to Disabled is only changed if you say yes ([below](#the-chrome-flag)) |
 | Firefox pref | `media.webrtc.camera.allow-pipewire` in each profile's `prefs.js` (native, snap, Flatpak) | Turns it on for normal and Flatpak Firefox, and **off for snap Firefox**, which crashes on the PipeWire camera ([below](#snap-firefox)). Firefox must be closed; it keeps a backup of `prefs.js`. Only the profiles Firefox actually uses are changed ([below](#which-firefox-profiles)) |
 | Portal camera permission | The xdg-desktop-portal permission store, for the browsers GNOME can't show the camera dialog for | Allows those browsers to use the camera without the dialog. The browser still asks you per site |
 
@@ -16,7 +16,7 @@ Everything it changes is recorded, and `--undo` puts it back.
 
 Anyone whose browser gets the webcam through PipeWire and xdg-desktop-portal. That's the usual route for laptop cameras run by libcamera (Intel IPU6 and IPU7), and for any webcam once a browser's PipeWire camera option is on.
 
-It started as a companion to Andy's [Samsung Galaxy Book Linux fixes](https://github.com/Andycodeman/samsung-galaxy-book-linux-fixes), whose `webcam-fix-book5` and `webcam-fix-libcamera` set up the camera and Camera Relay. It doesn't need them, but it uses one of their tools for the Chrome flag when it's there.
+It started as a companion to Andy's [Samsung Galaxy Book Linux fixes](https://github.com/Andycodeman/samsung-galaxy-book-linux-fixes), whose `webcam-fix-book5` and `webcam-fix-libcamera` set up the camera and Camera Relay. It doesn't need them, and works the same with or without them.
 
 ## Get it
 
@@ -42,7 +42,15 @@ It needs `busctl`, which comes with systemd.
 
 ### The Chrome flag
 
-Chrome keeps its flags in a file it rewrites when it quits, so changing it safely takes care. For that the script uses `chromium-pipewire-camera`, which comes with Camera Relay in Andy's fixes. If that isn't installed, the script can't check the flag and tells you to set it by hand: open `chrome://flags/#enable-webrtc-pipewire-camera`, set it to **Enabled**, then fully quit and reopen Chrome.
+Chrome keeps its flags in each profile's `Local State` file, which it rewrites when it quits. So the script changes the flag only while that browser is closed (it checks the profile's lock, and asks `flatpak` for Flatpak browsers), keeps a backup (`Local State.pipewire-browser-camera-fix.bak`), and touches nothing else in the file.
+
+- **Not set:** turned on (Enter or `--yes`).
+- **Disabled:** someone may have chosen that, so it always asks first, even with `--yes`.
+- **`--undo`:** puts each profile back to what it was before: Default, or Disabled.
+
+It needs `python3` to edit the file. Without it, it tells you to set the flag by hand: open `chrome://flags/#enable-webrtc-pipewire-camera`, set it to **Enabled**, then fully quit and reopen Chrome.
+
+Versions before November 2026 changed the flag through `chromium-pipewire-camera` from Andy's Camera Relay. That tool skips the flag when it can't find libcamera's development files (on Fedora without `libcamera-devel`, for example) and isn't there at all once Camera Relay is uninstalled. `--undo` still hands changes those versions made back to it.
 
 ## Why "Waiting for your permission"
 
@@ -104,13 +112,13 @@ The script shows Firefox the same way as Chrome, `Firefox: ENABLED` or `DISABLED
 
 - **Portal:** a "yes" for each browser ID you agree to, stored in the portal's permission store (`devices` / `camera`).
 - **Firefox:** the `media.webrtc.camera.allow-pipewire` line in `prefs.js` (on, or off in snap Firefox). The first time it edits a profile it saves `prefs.js.pipewire-browser-camera-fix.bak` next to it.
-- **Chrome / Chromium:** the PipeWire camera flag, through `chromium-pipewire-camera`.
+- **Chrome / Chromium:** the PipeWire camera flag in each profile's `Local State`. The first time it edits a profile it saves `Local State.pipewire-browser-camera-fix.bak` next to it.
 
 The list of changes is kept in `~/.local/state/pipewire-browser-camera-fix/changes`. `--undo` reads it:
 - it removes the portal permissions it added;
 - it puts a "no" it changed back to "no";
 - it restores each Firefox pref to its previous value;
-- it turns the Chrome flag off again if the script was what turned it on.
+- it puts each Chrome profile's flag back to what it was (Default, or Disabled) where the script changed it, and removes the backup.
 
 Changes made before the project was renamed are in `~/.local/state/browser-camera-fix/changes`; `--undo` reads that too.
 
