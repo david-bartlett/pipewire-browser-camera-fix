@@ -14,6 +14,7 @@
 #      runs, never over a Disabled without asking, and --undo restores each
 #      profile's own setting.
 #   5. --check changes nothing.
+#   8. prefs.js is never replaced by a part-written copy (a full disk).
 #   7. --undo keeps every change it couldn't put back (a browser running, the
 #      portal unreachable, a write that failed), says so and exits 1, so the
 #      next --undo retries; and only the first record per profile is kept, so
@@ -48,9 +49,19 @@ new_env() {
     local d="$TMP/env-$RANDOM$RANDOM" tool
     mkdir -p "$d/bin" "$d/home" "$d/proc" "$d/snap"
     : > "$d/store"
-    for tool in grep sort head tail readlink mkdir rm rmdir cat sed wc mv cp mktemp chmod tr awk python3 ln; do
+    for tool in sort head tail readlink mkdir rm rmdir cat sed wc mv cp mktemp chmod tr awk python3 ln sync; do
         ln -s "$(command -v "$tool")" "$d/bin/$tool"
     done
+    # grep, except when $d/prefs-write-fails exists: then the prefs.js filter
+    # writes part of the file and fails, as on a full disk.
+    cat > "$d/bin/grep" <<EOF
+#!$BASH
+if [[ -e "$d/prefs-write-fails" && "\$1" == -v && "\$2" == *allow-pipewire* ]]; then
+    head -c 40 "\$3"; echo "grep: write error: No space left on device" >&2; exit 2
+fi
+exec $(command -v grep) "\$@"
+EOF
+    chmod +x "$d/bin/grep"
     cat > "$d/bin/busctl" <<EOF
 #!$BASH
 store="$d/store"
@@ -512,6 +523,43 @@ check "second run turns it on again" '[[ "$(pref_in "$d" .mozilla/firefox/abc.de
 check "no second record" '[[ "$(state_of "$d")" == "firefox $d/home/.mozilla/firefox/abc.default/prefs.js unset" ]]'
 run "$d" undo
 check "--undo puts back the original (unset)" '[[ -z "$(pref_in "$d" .mozilla/firefox/abc.default)" ]]'
+
+# ── 8. prefs.js only replaced by a whole copy ─────────────────────────────────
+echo
+echo "prefs.js on a full disk"
+
+# The fix turning the pref on, while the filter's write fails.
+d=$(new_env)
+add_profile "$d" .mozilla/firefox/abc.default-release false
+pf="$d/home/.mozilla/firefox/abc.default-release/prefs.js"
+cp "$pf" "$d/prefs-before"
+touch "$d/prefs-write-fails"
+run "$d" yes
+check "full disk: prefs.js unchanged" 'cmp -s "$d/prefs-before" "$pf"'
+check "full disk: reported" 'grep -q "could not update prefs.js" "$d/out"'
+check "full disk: no temporary file left" '[[ -z "$(find "${pf%/*}" -name "prefs.js.??????")" ]]'
+check "full disk: nothing recorded for --undo" '! grep -q "abc.default-release" <<< "$(state_of "$d")"'
+rm -f "$d/prefs-write-fails"
+run "$d" yes
+check "disk space back: the pref is set" '[[ "$(pref_in "$d" .mozilla/firefox/abc.default-release)" == true ]]'
+
+# --undo while the write fails: prefs.js stays, and so does the record.
+cp "$pf" "$d/prefs-before"
+touch "$d/prefs-write-fails"
+run "$d" undo
+check "full disk, --undo: prefs.js unchanged" 'cmp -s "$d/prefs-before" "$pf"'
+check "full disk, --undo: kept for the next --undo, exit 1" \
+    '[[ "$(cat "$d/rc")" == 1 ]] && grep -q "abc.default-release/prefs.js false" <<< "$(state_of "$d")"'
+rm -f "$d/prefs-write-fails"
+run "$d" undo
+check "--undo after: pref back to false" '[[ "$(pref_in "$d" .mozilla/firefox/abc.default-release)" == false ]]'
+
+# A prefs.js with nothing but our line (grep keeps no lines: status 1, not an error).
+d=$(new_env)
+mkdir -p "$d/home/.mozilla/firefox/abc.default-release"
+echo 'user_pref("media.webrtc.camera.allow-pipewire", false);' > "$d/home/.mozilla/firefox/abc.default-release/prefs.js"
+run "$d" yes
+check "prefs.js with only our line: set to true" '[[ "$(pref_in "$d" .mozilla/firefox/abc.default-release)" == true ]]'
 
 # Enter alone: yes for the fixes the script is run for, no for removing a stored "no".
 eval "$(extract_fn answer_yes)"
