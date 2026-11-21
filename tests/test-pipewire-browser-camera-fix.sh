@@ -14,6 +14,10 @@
 #      runs, never over a Disabled without asking, and --undo restores each
 #      profile's own setting.
 #   5. --check changes nothing.
+#   7. --undo keeps every change it couldn't put back (a browser running, the
+#      portal unreachable, a write that failed), says so and exits 1, so the
+#      next --undo retries; and only the first record per profile is kept, so
+#      --undo goes back to the state before the first run.
 #
 # Usage: ./test-pipewire-browser-camera-fix.sh
 # Needs no browser, portal or session bus, and touches no system state.
@@ -62,9 +66,11 @@ case "\$method" in
         while read -r id perm; do out+=" \"\$id\" 1 \"\$perm\""; done < "\$store"
         echo "\$out y 0" ;;
     SetPermission)
+        [[ -e "$d/store-readonly" ]] && { echo "Call failed: refused" >&2; exit 1; }
         grep -v "^\$4 " "\$store" > "\$store.tmp"; mv "\$store.tmp" "\$store"
         echo "\$4 \$6" >> "\$store" ;;
     DeletePermission)
+        [[ -e "$d/store-readonly" ]] && { echo "Call failed: refused" >&2; exit 1; }
         grep -v "^\$3 " "\$store" > "\$store.tmp"; mv "\$store.tmp" "\$store" ;;
 esac
 EOF
@@ -78,7 +84,8 @@ echo "\$1" >> "$d/flag-calls"
 case "\$1" in
     status)  cat "$d/flag-status" ;;
     enable)  echo "  ✓ Google Chrome: PipeWire camera flag enabled" ;;
-    disable) echo "  ✓ Google Chrome: PipeWire camera flag removed" ;;
+    disable) [[ -e "$d/flag-fails" ]] && { echo "  ⚠ Google Chrome is running"; exit 1; }
+             echo "  ✓ Google Chrome: PipeWire camera flag removed" ;;
 esac
 EOF
     chmod +x "$d/bin/busctl" "$d/bin/pgrep" "$d/bin/journalctl" "$d/flag-tool"
@@ -130,7 +137,7 @@ run() {
         # shellcheck disable=SC2034  # read by the evaluated functions
         MODE="$mode"
         eval "$(sed -n '/^STATE_FILE=/,/^PORTAL_STORE_PATH=/p' "$SCRIPT")"
-        for fn in section answer_yes ask ask_always record portal_store portal_camera_entries \
+        for fn in section answer_yes ask ask_always record recorded portal_store portal_camera_entries \
                   portal_camera_state running_chromium_scope_ids firefox_prefs_files \
                   firefox_pref_value firefox_running firefox_set_pref profile_label snap_profile \
                   flatpak_profile firefox_unused_profile firefox_default_profile \
@@ -402,6 +409,109 @@ echo "portal com.google.Chrome" > "$d/home/.local/state/browser-camera-fix/chang
 run "$d" undo
 check "--undo reads the pre-rename state file" '[[ -z "$(perm_of "$d" com.google.Chrome)" ]]'
 check "pre-rename state file removed" '[[ ! -e "$d/home/.local/state/browser-camera-fix/changes" ]]'
+
+# ── 7. --undo keeps what it couldn't put back ─────────────────────────────────
+echo
+echo "--undo: failures kept and retried"
+
+ST=.local/state/pipewire-browser-camera-fix/changes
+set_state() { mkdir -p "$1/home/${ST%/*}"; shift_d=$1; shift; printf '%s\n' "$@" > "$shift_d/home/$ST"; }
+rc_of() { cat "$1/rc"; }
+
+# Firefox and Chrome running, the portal fine: the portal is undone, the other
+# two kept; once they're closed, a second --undo finishes.
+d=$(new_env)
+add_profile "$d" .mozilla/firefox/abc.default true
+add_chrome "$d" "$G" '["enable-webrtc-pipewire-camera@1"]'
+store_set "$d" com.google.Chrome yes
+set_state "$d" "portal com.google.Chrome" "firefox $d/home/.mozilla/firefox/abc.default/prefs.js unset" \
+    "chrome not-set $d/home/$G"
+touch "$d/firefox-running"
+ln -s "host-$$" "$d/home/$G/SingletonLock"
+run "$d" undo
+check "browsers running: exit 1" '[[ "$(rc_of "$d")" == 1 ]]'
+check "browsers running: the portal grant is still removed" '[[ -z "$(perm_of "$d" com.google.Chrome)" ]]'
+check "browsers running: only Firefox and Chrome still recorded" \
+    '[[ "$(state_of "$d")" == "$(printf "%s\n" "firefox $d/home/.mozilla/firefox/abc.default/prefs.js unset" "chrome not-set $d/home/$G")" ]]'
+check "browsers running: says how many weren't put back" 'grep -q "2 change(s) couldn.t be put back" "$d/out"'
+rm -f "$d/firefox-running" "$d/home/$G/SingletonLock"
+run "$d" undo
+check "closed: second --undo exits 0" '[[ "$(rc_of "$d")" == 0 ]]'
+check "closed: Firefox pref back to unset" '[[ -z "$(pref_in "$d" .mozilla/firefox/abc.default)" ]]'
+check "closed: Chrome flag back to Default" '[[ -z "$(labs_of "$d" "$G")" ]]'
+check "closed: state file removed" '[[ -z "$(state_of "$d")" ]]'
+
+# The portal not reachable, then refusing changes, then fine.
+d=$(new_env)
+store_set "$d" snap.firefox yes
+set_state "$d" "portal snap.firefox"
+touch "$d/unreachable"
+run "$d" undo
+check "portal unreachable: kept, exit 1" '[[ "$(rc_of "$d")" == 1 && "$(state_of "$d")" == "portal snap.firefox" ]]'
+check "portal unreachable: reported" 'grep -q "not reachable" "$d/out"'
+rm -f "$d/unreachable"
+touch "$d/store-readonly"
+run "$d" undo
+check "removal refused: kept, exit 1" '[[ "$(rc_of "$d")" == 1 && "$(state_of "$d")" == "portal snap.firefox" ]]'
+rm -f "$d/store-readonly"
+run "$d" undo
+check "portal fine: undone, record gone" '[[ "$(rc_of "$d")" == 0 && -z "$(perm_of "$d" snap.firefox)" && -z "$(state_of "$d")" ]]'
+
+d=$(new_env)
+store_set "$d" snap.chromium yes
+set_state "$d" "portal-was-no snap.chromium"
+touch "$d/store-readonly"
+run "$d" undo
+check "\"no\" refused: kept, exit 1" '[[ "$(rc_of "$d")" == 1 && "$(state_of "$d")" == "portal-was-no snap.chromium" ]]'
+rm -f "$d/store-readonly"
+run "$d" undo
+check "\"no\" put back on the retry" '[[ "$(perm_of "$d" snap.chromium)" == no && -z "$(state_of "$d")" ]]'
+
+# Changed since (the user said "no" meanwhile): nothing of ours left to undo.
+d=$(new_env)
+store_set "$d" com.google.Chrome no
+set_state "$d" "portal com.google.Chrome"
+run "$d" undo
+check "changed since: left as it is, record dropped, exit 0" \
+    '[[ "$(rc_of "$d")" == 0 && "$(perm_of "$d" com.google.Chrome)" == no && -z "$(state_of "$d")" ]]'
+
+# A Local State that can't be read now: kept, and left as it is.
+d=$(new_env)
+mkdir -p "$d/home/$G"
+printf '{"browser":{"enabled_labs' > "$d/home/$G/Local State"
+set_state "$d" "chrome DISABLED $d/home/$G"
+run "$d" undo
+check "Chrome write fails: kept, exit 1" '[[ "$(rc_of "$d")" == 1 && "$(state_of "$d")" == "chrome DISABLED $d/home/$G" ]]'
+check "Chrome write fails: the file left as it was" '[[ "$(cat "$d/home/$G/Local State")" == "{\"browser\":{\"enabled_labs" ]]'
+
+# chromium-pipewire-camera (old chrome-flag records) not finishing: kept.
+d=$(new_env)
+set_state "$d" "chrome-flag"
+touch "$d/flag-fails"
+run "$d" undo
+check "chromium-pipewire-camera fails: kept, exit 1" '[[ "$(rc_of "$d")" == 1 && "$(state_of "$d")" == chrome-flag ]]'
+
+# Gone profiles are dropped; a record this version doesn't know is kept.
+d=$(new_env)
+set_state "$d" "firefox $d/home/gone/prefs.js unset" "chrome not-set $d/home/gone" "frobnicate x y"
+run "$d" undo
+check "gone profiles dropped, unknown record kept" '[[ "$(rc_of "$d")" == 1 && "$(state_of "$d")" == "frobnicate x y" ]]'
+
+# Only the first record per profile: the fix turns the pref on (recording
+# "unset"), the user turns it off, the fix runs again. --undo goes back to
+# unset, not to the in-between false.
+echo
+echo "first record kept"
+d=$(new_env)
+add_profile "$d" .mozilla/firefox/abc.default
+run "$d" yes
+check "first run records the original" '[[ "$(state_of "$d")" == "firefox $d/home/.mozilla/firefox/abc.default/prefs.js unset" ]]'
+sed -i 's/allow-pipewire", true);/allow-pipewire", false);/' "$d/home/.mozilla/firefox/abc.default/prefs.js"
+run "$d" yes
+check "second run turns it on again" '[[ "$(pref_in "$d" .mozilla/firefox/abc.default)" == true ]]'
+check "no second record" '[[ "$(state_of "$d")" == "firefox $d/home/.mozilla/firefox/abc.default/prefs.js unset" ]]'
+run "$d" undo
+check "--undo puts back the original (unset)" '[[ -z "$(pref_in "$d" .mozilla/firefox/abc.default)" ]]'
 
 # Enter alone: yes for the fixes the script is run for, no for removing a stored "no".
 eval "$(extract_fn answer_yes)"

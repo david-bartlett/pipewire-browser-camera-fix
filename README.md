@@ -120,6 +120,10 @@ The list of changes is kept in `~/.local/state/pipewire-browser-camera-fix/chang
 - it restores each Firefox pref to its previous value;
 - it puts each Chrome profile's flag back to what it was (Default, or Disabled) where the script changed it, and removes the backup.
 
+Only the first change to each profile or browser ID is recorded, so running the script again later (after you changed something back, say) doesn't replace what it was before the first run.
+
+Anything `--undo` can't put back stays in the list, and it tells you which and exits with an error. That might be a browser that's running, the portal not answering, or a file it couldn't write. Close that browser, or fix what it says, and run `--undo` again: it retries just those. Something you've changed yourself since isn't put back; it's left as it is and dropped from the list.
+
 Changes made before the project was renamed are in `~/.local/state/browser-camera-fix/changes`; `--undo` reads that too.
 
 ## Where it's been checked
@@ -136,4 +140,4 @@ Changes made before the project was renamed are in `~/.local/state/browser-camer
 ./tests/test-pipewire-browser-camera-fix.sh
 ```
 
-These need no browser, portal or session bus. They cover the app IDs, stored decisions, Firefox profiles (including Firefox running, profiles Firefox doesn't use, package defaults and `user.js`), the Chrome flag, `--check` and `--undo`.
+These need no browser, portal or session bus. They cover the app IDs, stored decisions, Firefox profiles (including Firefox running, profiles Firefox doesn't use, package defaults and `user.js`), the Chrome flag, `--check` and `--undo` (including what it keeps when something can't be put back).
