@@ -25,7 +25,9 @@
 #   --check   check only, change nothing
 #   --yes     make every safe change without asking (never removes a stored
 #             "no" from the portal — that one always asks)
-#   --undo    put back everything this script changed
+#   --undo    put back everything this script changed; anything it can't (a
+#             browser running, the portal unreachable) stays recorded for the
+#             next --undo, and it exits 1
 #
 # Run it as yourself, not with sudo: it edits your browser profiles and talks
 # to the portal on your session bus.
@@ -100,6 +102,25 @@ ask_always() {
 record() {
     mkdir -p "${STATE_FILE%/*}"
     grep -qxF "$*" "$STATE_FILE" 2>/dev/null || echo "$*" >> "$STATE_FILE"
+}
+
+# Is there a record already for this profile or portal app ID? $1 is chrome,
+# firefox or portal, $2 the profile folder, prefs.js or app ID. The first
+# record holds the state from before this script's first change, so a later
+# run (after the user changed it back, say) adds no second one: --undo puts
+# back the original, not an in-between state.
+recorded() {
+    local kind rest
+    [[ -r "$STATE_FILE" ]] || return 1
+    while IFS=' ' read -r kind rest; do
+        case "$1:$kind" in
+            chrome:chrome)            [[ "${rest#* }" == "$2" ]] && return 0 ;;
+            firefox:firefox)          [[ "${rest% *}" == "$2" ]] && return 0 ;;
+            portal:portal | portal:portal-was-no)
+                                      [[ "$rest" == "$2" ]] && return 0 ;;
+        esac
+    done < "$STATE_FILE"
+    return 1
 }
 
 # ── Portal permission store ───────────────────────────────────────────────────
@@ -481,7 +502,7 @@ check_chromium_flag() {
         [[ -e "$dir/Local State$CHROME_BACKUP_SUFFIX" ]] \
             || cp -p "$dir/Local State" "$dir/Local State$CHROME_BACKUP_SUFFIX" 2>/dev/null || true
         if chrome_flag "$dir" set 1 2>/dev/null; then
-            record "chrome ${before// /-} $dir"
+            recorded chrome "$dir" || record "chrome ${before// /-} $dir"
             echo "  ✓ $label: flag enabled (backup: Local State$CHROME_BACKUP_SUFFIX)"
         else
             echo "  ⚠ $label: could not update Local State"
@@ -608,7 +629,7 @@ check_firefox_pref() {
         prefs=${change[$i]}
         value=$(firefox_pref_value "$prefs")
         if firefox_set_pref "$prefs" "${to[$i]}"; then
-            record "firefox $prefs ${value:-unset}"
+            recorded firefox "$prefs" || record "firefox $prefs ${value:-unset}"
             if [[ "${to[$i]}" == true ]]; then
                 echo "  ✓ $(profile_label "$prefs"): pref on (backup: prefs.js$FF_BACKUP_SUFFIX)"
             else
@@ -653,7 +674,7 @@ check_portal() {
        ask "Allow ${unset_ids[*]} to use the camera without the portal dialog? (The browser still asks per site.)"; then
         for id in "${unset_ids[@]}"; do
             if portal_store SetPermission sbssas devices true camera "$id" 1 yes &>/dev/null; then
-                record "portal $id"
+                recorded portal "$id" || record "portal $id"
                 echo "  ✓ $id: allowed"
             else
                 echo "  ⚠ $id: could not store the permission"
@@ -667,7 +688,7 @@ check_portal() {
     for id in "${denied_ids[@]}"; do
         if ask_always "$id has a stored \"no\". Remove it and allow the camera?"; then
             if portal_store SetPermission sbssas devices true camera "$id" 1 yes &>/dev/null; then
-                record "portal-was-no $id"
+                recorded portal "$id" || record "portal-was-no $id"
                 echo "  ✓ $id: allowed"
             else
                 echo "  ⚠ $id: could not change the permission"
@@ -676,6 +697,11 @@ check_portal() {
     done
 }
 
+# Put back what the state file records. A record is only dropped once its
+# change is undone, or there's nothing left to undo (the profile is gone, or
+# the setting was changed since). Every other one is kept, with what went
+# wrong, and --undo exits 1, so running it again retries just those. The file
+# is rewritten once, at the end: interrupted, the whole record is still there.
 undo_changes() {
     if [[ ! -s "$STATE_FILE" && -s "$LEGACY_STATE_FILE" ]]; then
         STATE_FILE="$LEGACY_STATE_FILE"
@@ -684,63 +710,121 @@ undo_changes() {
         echo "Nothing to undo — this script hasn't changed anything."
         return 0
     fi
-    local kind rest entries="" id prefs prev tool dir keep=()
-    entries=$(portal_camera_entries) || entries=""
+    local line kind rest entries id prefs prev tool dir state out failed=0
+    local -a keep=()
 
-    while IFS=' ' read -r kind rest; do
+    # undo_failed LINE MESSAGE: the change couldn't be undone; say why and keep it.
+    undo_failed() {
+        keep+=("$1")
+        echo "  ⚠ $2"
+        failed=$((failed + 1))
+    }
+
+    while IFS= read -r line; do
+        [[ -n "$line" ]] || continue
+        IFS=' ' read -r kind rest <<< "$line"
         case "$kind" in
-            portal)
+            portal | portal-was-no)
                 id="$rest"
-                if [[ "$(portal_camera_state "$entries" "$id")" == "yes" ]] \
-                   && portal_store DeletePermission sss devices camera "$id" &>/dev/null; then
-                    echo "  ✓ Portal: removed the permission for $id"
-                fi ;;
-            portal-was-no)
-                id="$rest"
-                if [[ "$(portal_camera_state "$entries" "$id")" == "yes" ]] \
-                   && portal_store SetPermission sbssas devices true camera "$id" 1 no &>/dev/null; then
+                # Asked again for each record: an earlier one may have changed
+                # the store.
+                if ! entries=$(portal_camera_entries); then
+                    undo_failed "$line" "Portal: permission store not reachable — couldn't put back $id"
+                    continue
+                fi
+                state=$(portal_camera_state "$entries" "$id")
+                if [[ "$state" != "yes" ]]; then
+                    # Not what this script set: changed since, or removed.
+                    echo "  – Portal: $id is ${state:-not set} now, left as it is"
+                    continue
+                fi
+                if [[ "$kind" == portal ]]; then
+                    if portal_store DeletePermission sss devices camera "$id" &>/dev/null; then
+                        echo "  ✓ Portal: removed the permission for $id"
+                    else
+                        undo_failed "$line" "Portal: couldn't remove the permission for $id"
+                    fi
+                elif portal_store SetPermission sbssas devices true camera "$id" 1 no &>/dev/null; then
                     echo "  ✓ Portal: $id back to \"no\""
+                else
+                    undo_failed "$line" "Portal: couldn't set $id back to \"no\""
                 fi ;;
             firefox)
                 prefs="${rest% *}"
                 prev="${rest##* }"
-                [[ -f "$prefs" ]] || continue
+                [[ -f "$prefs" ]] || { echo "  – $prefs is gone, nothing to put back"; continue; }
                 if firefox_running; then
-                    echo "  ⚠ Firefox is running — quit it and run --undo again to restore $(profile_label "$prefs")"
-                    keep+=("$kind $rest")
+                    undo_failed "$line" "Firefox is running — quit it and run --undo again to restore $(profile_label "$prefs")"
                     continue
                 fi
-                firefox_set_pref "$prefs" "$prev" \
-                    && echo "  ✓ $(profile_label "$prefs"): pref back to ${prev}" ;;
+                if firefox_set_pref "$prefs" "$prev"; then
+                    echo "  ✓ $(profile_label "$prefs"): pref back to ${prev}"
+                else
+                    undo_failed "$line" "$(profile_label "$prefs"): couldn't put the pref back to ${prev}"
+                fi ;;
             chrome)
                 # "chrome <state before> <profile folder>"
                 prev="${rest%% *}"
                 dir="${rest#* }"
-                [[ -f "$dir/Local State" ]] || continue
+                [[ -f "$dir/Local State" ]] || { echo "  – ${dir/#$HOME/\~} is gone, nothing to put back"; continue; }
                 if chrome_running "$dir"; then
-                    echo "  ⚠ The browser using ${dir/#$HOME/\~} is running — quit it and run --undo again"
-                    keep+=("$kind $rest")
+                    undo_failed "$line" "The browser using ${dir/#$HOME/\~} is running — quit it and run --undo again"
                     continue
                 fi
                 case "$prev" in
-                    DISABLED) chrome_flag "$dir" set 2 && echo "  ✓ ${dir/#$HOME/\~}: flag back to Disabled" ;;
-                    *)        chrome_flag "$dir" remove && echo "  ✓ ${dir/#$HOME/\~}: flag back to Default" ;;
+                    DISABLED)
+                        if chrome_flag "$dir" set 2; then
+                            echo "  ✓ ${dir/#$HOME/\~}: flag back to Disabled"
+                        else
+                            undo_failed "$line" "${dir/#$HOME/\~}: couldn't set the flag back to Disabled"
+                            continue
+                        fi ;;
+                    *)
+                        if chrome_flag "$dir" remove; then
+                            echo "  ✓ ${dir/#$HOME/\~}: flag back to Default"
+                        else
+                            undo_failed "$line" "${dir/#$HOME/\~}: couldn't set the flag back to Default"
+                            continue
+                        fi ;;
                 esac
                 rm -f "$dir/Local State$CHROME_BACKUP_SUFFIX" ;;
             chrome-flag)
-                # Recorded by versions that used chromium-pipewire-camera.
-                if tool=$(chromium_flag_tool); then
-                    "$tool" disable 2>&1 | sed 's/^ */  /'
+                # Recorded by versions that used chromium-pipewire-camera. It
+                # undoes only what it set itself (its own markers); without it
+                # there's nothing left to hand this to.
+                if ! tool=$(chromium_flag_tool); then
+                    echo "  – chromium-pipewire-camera isn't installed any more: nothing to hand back"
+                    continue
+                fi
+                if out=$("$tool" disable 2>&1); then
+                    sed 's/^ */  /' <<< "$out"
+                else
+                    sed 's/^ */  /' <<< "$out"
+                    undo_failed "$line" "chromium-pipewire-camera disable didn't finish (above)"
                 fi ;;
+            *)
+                # Written by a newer version, perhaps: not ours to drop.
+                undo_failed "$line" "Unknown record, kept: $line" ;;
         esac
     done < "$STATE_FILE"
 
     if (( ${#keep[@]} )); then
-        printf '%s\n' "${keep[@]}" > "$STATE_FILE"
-    else
-        rm -f "$STATE_FILE"
-        rmdir "${STATE_FILE%/*}" 2>/dev/null || true
+        local tmp
+        if tmp=$(mktemp "$STATE_FILE.XXXXXX") && printf '%s\n' "${keep[@]}" > "$tmp" \
+           && mv -f "$tmp" "$STATE_FILE"; then
+            :
+        else
+            rm -f "${tmp:-}"
+            echo "  ⚠ Couldn't update $STATE_FILE: it still lists everything, so --undo again is safe"
+        fi
+        echo
+        echo "$failed change(s) couldn't be put back, and are still recorded."
+        echo "Fix what's listed above, then run: $0 --undo"
+        return 1
     fi
+    rm -f "$STATE_FILE"
+    rmdir "${STATE_FILE%/*}" 2>/dev/null || true
+    return 0
 }
 
 # ── Main ──────────────────────────────────────────────────────────────────────
@@ -749,7 +833,7 @@ echo "pipewire-browser-camera-fix — Chrome, Chromium and Firefox on the PipeWi
 
 if [[ "$MODE" == "undo" ]]; then
     undo_changes
-    exit 0
+    exit
 fi
 
 check_environment
