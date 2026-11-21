@@ -2,6 +2,9 @@
 
 ## Unreleased
 
+- **Firefox's prefs.js is never replaced by a part-written copy**
+  On a full disk, changing the PipeWire pref (or `--undo` putting it back) could replace `prefs.js` with the part that had been written, and say nothing. Every step is now checked, and the new copy is flushed to disk before it replaces the original. If anything fails, `prefs.js` stays as it was, the change is reported, and `--undo` keeps it for the next run. The one-time backup is made the same way.
+
 - **`--undo` retries what it couldn't put back**
   Before, `--undo` only kept a change it had skipped because a browser was running. If the portal didn't answer, or a write failed, the change was dropped from the list without being undone, and `--undo` still reported success. Now every change it can't put back stays recorded and is listed, `--undo` exits 1, and running it again retries just those. A change is dropped once it's undone, or when there's nothing left to undo (the profile is gone, or you changed the setting yourself since).
   Running the script again no longer adds a second record for a profile or browser ID, so `--undo` puts back the state from before the first run, not an in-between one.

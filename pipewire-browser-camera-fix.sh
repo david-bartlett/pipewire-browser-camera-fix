@@ -304,16 +304,29 @@ firefox_running() {
 }
 
 # Set the pref to $2 (true/false), or remove it when $2 is "unset".
+# prefs.js is the profile's settings, so it's only replaced by a copy known to
+# be whole: every step is checked, and the copy is flushed to disk first. On a
+# full disk, grep used to write part of the file, its error was ignored, and
+# the part went over the original. Any failure leaves prefs.js as it was and
+# returns 1. The backup is made the same way, so it can't be a partial copy.
 firefox_set_pref() {
-    local prefs="$1" value="$2" tmp
-    [[ -e "$prefs$FF_BACKUP_SUFFIX" ]] || cp -p "$prefs" "$prefs$FF_BACKUP_SUFFIX" || return 1
+    local prefs="$1" value="$2" tmp bak="$1$FF_BACKUP_SUFFIX" rc=0
+    if [[ ! -e "$bak" ]]; then
+        tmp=$(mktemp "${bak}.XXXXXX") || return 1
+        if ! { cp -p "$prefs" "$tmp" && sync -- "$tmp" && mv -f "$tmp" "$bak"; }; then
+            rm -f "$tmp"; return 1
+        fi
+    fi
     tmp=$(mktemp "${prefs}.XXXXXX") || return 1
-    grep -v "^[[:space:]]*user_pref(\"${FF_PREF//./\\.}\"" "$prefs" > "$tmp"
+    # grep -v: 0 = lines kept, 1 = no lines left (an empty prefs.js), >1 = error.
+    grep -v "^[[:space:]]*user_pref(\"${FF_PREF//./\\.}\"" "$prefs" > "$tmp" || rc=$?
+    if (( rc > 1 )); then rm -f "$tmp"; return 1; fi
     if [[ "$value" != "unset" ]]; then
-        echo "user_pref(\"$FF_PREF\", $value);" >> "$tmp"
+        printf 'user_pref("%s", %s);\n' "$FF_PREF" "$value" >> "$tmp" || { rm -f "$tmp"; return 1; }
     fi
     chmod --reference="$prefs" "$tmp" 2>/dev/null || true
-    mv -f "$tmp" "$prefs"
+    sync -- "$tmp" || { rm -f "$tmp"; return 1; }
+    mv -f "$tmp" "$prefs" || { rm -f "$tmp"; return 1; }
 }
 
 profile_label() {

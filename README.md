@@ -111,7 +111,7 @@ The script shows Firefox the same way as Chrome, `Firefox: ENABLED` or `DISABLED
 ## What it changes
 
 - **Portal:** a "yes" for each browser ID you agree to, stored in the portal's permission store (`devices` / `camera`).
-- **Firefox:** the `media.webrtc.camera.allow-pipewire` line in `prefs.js` (on, or off in snap Firefox). The first time it edits a profile it saves `prefs.js.pipewire-browser-camera-fix.bak` next to it.
+- **Firefox:** the `media.webrtc.camera.allow-pipewire` line in `prefs.js` (on, or off in snap Firefox). The first time it edits a profile it saves `prefs.js.pipewire-browser-camera-fix.bak` next to it. `prefs.js` is only replaced by a copy that was written in full, so a full disk leaves it as it was.
 - **Chrome / Chromium:** the PipeWire camera flag in each profile's `Local State`. The first time it edits a profile it saves `Local State.pipewire-browser-camera-fix.bak` next to it.
 
 The list of changes is kept in `~/.local/state/pipewire-browser-camera-fix/changes`. `--undo` reads it:
