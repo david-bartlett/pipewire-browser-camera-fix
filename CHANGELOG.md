@@ -2,6 +2,9 @@
 
 ## Unreleased
 
+- **GNOME Web found by its menu entry**
+  It was listed whenever an `epiphany` command existed, but Fedora's `epiphany-runtime` package has one without the browser. Now it's found by GNOME Web's menu entry, `org.gnome.Epiphany.desktop` (native, or a Flatpak's).
+
 - **Firefox's portal IDs**
   On GNOME the portal stores a normal Firefox as `firefox`, and Flatpak Firefox as `org.mozilla.firefox`. Like the empty ID, they're now shown when something is stored, and a "no" there is offered for removal (always asking) and cleared by `--allow`. A "yes" is never added for them by itself: Firefox gets the portal's dialog.
 
