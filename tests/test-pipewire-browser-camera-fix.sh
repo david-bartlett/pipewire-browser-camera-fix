@@ -856,6 +856,7 @@ check "--yes: Edge's switch added, the check says so" \
 # Installed but never opened, GNOME Web, and portal IDs from what's installed.
 d=$(new_env)
 add_bin "$d" brave; add_bin "$d" vivaldi; add_bin "$d" epiphany
+mkdir -p "$d/share/applications"; : > "$d/share/applications/org.gnome.Epiphany.desktop"
 add_chrome "$d" .config/vivaldi '[]'
 run "$d" status
 check "status: Brave installed, never opened: chrome-unopened" 'grep -qxP "chrome-unopened\tlabel=Brave" "$d/out"'
@@ -864,6 +865,11 @@ check "status: Vivaldi has a profile: a normal line, not unopened" \
 check "status: GNOME Web needs nothing: pipewire-native" 'grep -qxP "pipewire-native\tlabel=GNOME Web" "$d/out"'
 check "portal IDs: Brave as org.chromium.Chromium, Vivaldi as com.vivaldi.Vivaldi (installed is enough)" \
     '[[ -n "$(line_of "$d" portal "id=org.chromium.Chromium")" && -n "$(line_of "$d" portal "id=com.vivaldi.Vivaldi")" ]]'
+d2=$(new_env)
+add_bin "$d2" epiphany
+run "$d2" status
+check "an epiphany command without GNOME Web's menu entry (Fedora's epiphany-runtime): not listed" \
+    '! grep -q "^pipewire-native" "$d2/out"'
 run "$d" check
 check "check: never opened and GNOME Web said in words" \
     'grep -q "Brave: *installed, never opened" "$d/out" && grep -q "GNOME Web: *uses the camera through PipeWire by itself" "$d/out"'

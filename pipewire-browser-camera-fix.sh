@@ -554,11 +554,18 @@ chrome_unopened() {
 
 # Browsers that use the camera through PipeWire with nothing to set: GNOME
 # Web (WebKitGTK always goes through PipeWire and the portal). One label each.
+# Found by its menu entry, native or a Flatpak's exported one: the epiphany
+# command alone isn't the browser (Fedora's epiphany-runtime has it without
+# GNOME Web, 23 Nov 2026). EDGE_DATA_DIRS is for the tests, as for Edge.
 pipewire_native_browsers() {
-    if command -v epiphany &>/dev/null || [[ -d "$HOME/.local/share/flatpak/app/org.gnome.Epiphany" ]] \
-       || [[ -d /var/lib/flatpak/app/org.gnome.Epiphany ]]; then
-        echo "GNOME Web"
-    fi
+    local dir
+    local IFS=:
+    for dir in ${EDGE_DATA_DIRS:-${XDG_DATA_HOME:-$HOME/.local/share}:${XDG_DATA_DIRS:-/usr/local/share:/usr/share}:$HOME/.local/share/flatpak/exports/share:/var/lib/flatpak/exports/share}; do
+        if [[ -f "$dir/applications/org.gnome.Epiphany.desktop" ]]; then
+            echo "GNOME Web"
+            break
+        fi
+    done
     return 0
 }
 
