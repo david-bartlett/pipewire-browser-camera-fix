@@ -148,12 +148,15 @@ run() {
     (
         PATH="$d/bin"
         HOME="$d/home"
-        unset XDG_STATE_HOME XDG_CONFIG_HOME MOZ_LEGACY_HOME
+        unset XDG_STATE_HOME XDG_CONFIG_HOME XDG_DATA_HOME MOZ_LEGACY_HOME
         # shellcheck disable=SC2034  # read by firefox_system_default
         FF_SYSTEM_ROOT="$d/sys"
         # shellcheck disable=SC2034  # read by the evaluated functions
         MODE="$mode"
         eval "$(sed -n '/^STATE_FILE=/,/^PORTAL_STORE_PATH=/p' "$SCRIPT")"
+        eval "$(grep -E '^EDGE_(FEATURE|MARK)=' "$SCRIPT")"
+        # shellcheck disable=SC2034  # read by edge_system_desktop
+        EDGE_DATA_DIRS="$d/share"
         for fn in section answer_yes ask ask_always record recorded portal_store portal_camera_entries \
                   portal_camera_state running_chromium_scope_ids firefox_prefs_files \
                   firefox_pref_value firefox_running firefox_set_pref profile_label snap_profile \
@@ -161,7 +164,9 @@ run() {
                   firefox_system_default firefox_user_js_value firefox_status_label firefox_effective \
                   chrome_profiles chrome_running chrome_flag \
                   check_environment check_chromium_flag check_firefox_pref check_portal \
-                  undo_changes status_report set_targets portal_allow; do
+                  undo_changes status_report set_targets portal_allow \
+                  chrome_unopened pipewire_native_browsers edge_launchers edge_flags_file edge_desktop_name \
+                  edge_user_desktop edge_system_desktop edge_features edge_state edge_set check_other_browsers; do
             eval "$(extract_fn "$fn")"
         done
         eval "$(extract_fn browser_portal_app_ids | sed '1s/^browser_portal_app_ids()/real_ids()/')"
@@ -173,7 +178,7 @@ run() {
             undo)   undo_changes ;;
             status) status_report ;;
             set)    set_targets ;;
-            *)      check_environment; check_chromium_flag; check_firefox_pref; check_portal ;;
+            *)      check_environment; check_chromium_flag; check_other_browsers; check_firefox_pref; check_portal ;;
         esac
     ) < /dev/null > "$d/out" 2>&1
     echo $? > "$d/rc"
@@ -599,7 +604,7 @@ check "status: target is the prefs.js" '[[ "$(field "$l" target)" == "$d/home/.m
 l=$(line_of "$d" firefox def.default)
 check "status: snap Firefox listed as snap" '[[ "$(field "$l" kind)" == snap && "$(field "$l" label)" == "Firefox (snap)" ]]'
 check "status: portal not set for Chrome" '[[ "$(field "$(line_of "$d" portal com.google.Chrome)" state)" == unset ]]'
-check "status: no banner, only status lines" '! grep -qvP "^(chrome|chrome-none|no-python|firefox|firefox-none|firefox-unused|portal|portal-none|portal-unreachable)(\t|$)" "$d/out"'
+check "status: no banner, only status lines" '! grep -qvP "^(chrome|chrome-none|chrome-unopened|pipewire-native|no-python|firefox|firefox-none|firefox-unused|portal|portal-none|portal-unreachable)(\t|$)" "$d/out"'
 check "status: changes nothing" '[[ -z "$(state_of "$d")" && ! -e "$d/home/$C/Local State.pipewire-browser-camera-fix.bak" && -z "$(perm_of "$d" com.google.Chrome)" ]]'
 touch "$d/firefox-running"; ln -s "myhost-$$" "$d/home/$G/SingletonLock"
 run "$d" status
@@ -769,6 +774,99 @@ check "--undo: the empty ID back to \"no\"" '[[ "$(perm_of "$d" "")" == no ]]'
 touch "$d/unreachable"
 run "$d" set "allow com.google.Chrome"
 check "allow with the store unreachable: refused, exit 1" '[[ "$(cat "$d/rc")" == 1 ]] && grep -q "isn.t reachable" "$d/out"'
+
+# ── Microsoft Edge, browsers never opened, GNOME Web ──────────────────────────
+# edge_launcher ENV yes|no: microsoft-edge-stable, reading its flags file or not.
+edge_launcher() {
+    { printf '#!%s\n' "$BASH"; [[ "$2" == yes ]] && echo '# reads $XDG_CONFIG_HOME/microsoft-edge-stable-flags.conf'; } > "$1/bin/microsoft-edge-stable"
+    chmod +x "$1/bin/microsoft-edge-stable"
+}
+EF() { echo "$1/home/.config/microsoft-edge-stable-flags.conf"; }
+
+d=$(new_env)
+edge_launcher "$d" yes
+run "$d" status
+# shellcheck disable=SC2034  # l is read by the check strings (eval)
+l=$(line_of "$d" chrome "Microsoft Edge")
+check "status: Edge listed (flags file), off, target its command" \
+    '[[ "$(field "$l" flag)" == off && "$(field "$l" via)" == flags-file && "$(field "$l" target)" == microsoft-edge-stable && "$(field "$l" running)" == no ]]'
+run "$d" set "on microsoft-edge-stable"
+check "Edge on: flags file made with the switch, exit 0" \
+    '[[ "$(cat "$(EF "$d")")" == "--enable-features=WebRtcPipeWireCamera" && "$(cat "$d/rc")" == 0 ]]'
+check "Edge on: recorded (off, no file before)" '[[ "$(state_of "$d")" == "edge-flags off absent $(EF "$d")" ]]'
+run "$d" status
+check "status: Edge on" '[[ "$(field "$(line_of "$d" chrome "Microsoft Edge")" flag)" == on ]]'
+run "$d" set "off microsoft-edge-stable"
+check "Edge off: the file it made is gone" '[[ ! -e "$(EF "$d")" ]]'
+
+# A flags file of the user's own: kept, and the feature joins their list.
+d=$(new_env)
+edge_launcher "$d" yes
+mkdir -p "$d/home/.config"
+printf -- '--ozone-platform=x11\n--enable-features=Foo,Bar\n' > "$(EF "$d")"
+cp "$(EF "$d")" "$d/flags-before"
+run "$d" set "on microsoft-edge-stable"
+check "Edge on, own flags file: added to their --enable-features list (Chromium uses one), rest kept" \
+    '[[ "$(cat "$(EF "$d")")" == "$(printf -- "--ozone-platform=x11\n--enable-features=Foo,Bar,WebRtcPipeWireCamera")" ]]'
+run "$d" set "off microsoft-edge-stable"
+check "Edge off, own flags file: just the feature taken out" 'cmp -s "$d/flags-before" "$(EF "$d")"'
+run "$d" set "on microsoft-edge-stable"
+run "$d" undo
+check "--undo: their flags file as it was" 'cmp -s "$d/flags-before" "$(EF "$d")"'
+
+# Microsoft's own package: no flags file, so a copy of its menu entry.
+d=$(new_env)
+edge_launcher "$d" no
+mkdir -p "$d/share/applications"
+printf '[Desktop Entry]\nName=Microsoft Edge\nExec=/usr/bin/microsoft-edge-stable %%U\n\n[Desktop Action new-window]\nExec=/usr/bin/microsoft-edge-stable --new-window\n' \
+    > "$d/share/applications/microsoft-edge.desktop"
+UD="$d/home/.local/share/applications/microsoft-edge.desktop"
+run "$d" status
+check "status: Edge via its menu entry, off" '[[ "$(field "$(line_of "$d" chrome "Microsoft Edge")" via)" == menu-entry && "$(field "$(line_of "$d" chrome "Microsoft Edge")" flag)" == off ]]'
+run "$d" set "on microsoft-edge-stable"
+check "Edge on: our copy of the menu entry, marked, switch after the program in every Exec line" \
+    'grep -qx "X-PipeWire-Browser-Camera-Fix=true" "$UD" && grep -qx "Exec=/usr/bin/microsoft-edge-stable --enable-features=WebRtcPipeWireCamera %U" "$UD" && grep -qx "Exec=/usr/bin/microsoft-edge-stable --enable-features=WebRtcPipeWireCamera --new-window" "$UD"'
+check "Edge on: the system entry untouched, the rest copied" \
+    '! grep -q enable-features "$d/share/applications/microsoft-edge.desktop" && grep -qx "Name=Microsoft Edge" "$UD"'
+run "$d" status
+check "status: Edge on (menu entry)" '[[ "$(field "$(line_of "$d" chrome "Microsoft Edge")" flag)" == on ]]'
+run "$d" set "off microsoft-edge-stable"
+check "Edge off: our copy removed, the system's entry used again" '[[ ! -e "$UD" ]]'
+run "$d" set "on microsoft-edge-stable"
+run "$d" undo
+check "--undo: our copy removed" '[[ ! -e "$UD" ]]'
+printf '[Desktop Entry]\nExec=/opt/my-edge %%U\n' > "$UD"
+run "$d" set "on microsoft-edge-stable"
+check "a menu entry copy of the user's own: refused, untouched, exit 1" \
+    '[[ "$(cat "$d/rc")" == 1 && "$(cat "$UD")" == "$(printf "[Desktop Entry]\nExec=/opt/my-edge %%U")" ]] && grep -q "your own copy" "$d/out"'
+rm -f "$UD" "$d/share/applications/microsoft-edge.desktop"
+run "$d" status
+check "no flags file and no menu entry: flag=manual, via=none" \
+    '[[ "$(field "$(line_of "$d" chrome "Microsoft Edge")" flag)" == manual && "$(field "$(line_of "$d" chrome "Microsoft Edge")" via)" == none ]]'
+run "$d" set "on microsoft-edge-stable"
+check "…and on is refused with the switch to use" '[[ "$(cat "$d/rc")" == 1 ]] && grep -q "Start it with --enable-features=WebRtcPipeWireCamera" "$d/out"'
+
+# --yes adds Edge's switch like the other browsers' settings.
+d=$(new_env)
+edge_launcher "$d" yes
+run "$d" yes
+check "--yes: Edge's switch added, the check says so" \
+    '[[ "$(cat "$(EF "$d")")" == "--enable-features=WebRtcPipeWireCamera" ]] && grep -q "Microsoft Edge:.*switch off" "$d/out"'
+
+# Installed but never opened, GNOME Web, and portal IDs from what's installed.
+d=$(new_env)
+add_bin "$d" brave; add_bin "$d" vivaldi; add_bin "$d" epiphany
+add_chrome "$d" .config/vivaldi '[]'
+run "$d" status
+check "status: Brave installed, never opened: chrome-unopened" 'grep -qxP "chrome-unopened\tlabel=Brave" "$d/out"'
+check "status: Vivaldi has a profile: a normal line, not unopened" \
+    '! grep -qP "chrome-unopened\tlabel=Vivaldi" "$d/out" && [[ -n "$(line_of "$d" chrome "label=Vivaldi")" ]]'
+check "status: GNOME Web needs nothing: pipewire-native" 'grep -qxP "pipewire-native\tlabel=GNOME Web" "$d/out"'
+check "portal IDs: Brave as org.chromium.Chromium, Vivaldi as com.vivaldi.Vivaldi (installed is enough)" \
+    '[[ -n "$(line_of "$d" portal "id=org.chromium.Chromium")" && -n "$(line_of "$d" portal "id=com.vivaldi.Vivaldi")" ]]'
+run "$d" check
+check "check: never opened and GNOME Web said in words" \
+    'grep -q "Brave: *installed, never opened" "$d/out" && grep -q "GNOME Web: *uses the camera through PipeWire by itself" "$d/out"'
 
 # The options themselves.
 for args in "--enable" "--status --check" "--yes --enable x" "--undo --status" "--allow" "--check --allow x"; do

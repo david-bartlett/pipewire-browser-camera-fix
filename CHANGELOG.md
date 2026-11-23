@@ -2,6 +2,12 @@
 
 ## Unreleased
 
+- **Microsoft Edge**
+  Edge has no PipeWire camera entry in `edge://flags`, but starting it with `--enable-features=WebRtcPipeWireCamera` works. The script now adds that switch: to `~/.config/microsoft-edge-stable-flags.conf` where Edge's launcher reads it (the AUR package), or to a copy of Edge's menu entry in `~/.local/share/applications/` (Microsoft's own packages). An `--enable-features=` you already have gets the feature added to it. `--status` lists Edge, `--enable`/`--disable microsoft-edge-stable` turn it on and off, and `--undo` takes it out.
+
+- **Browsers never opened, GNOME Web, and more portal IDs**
+  A Chrome-family browser that's installed but has never been opened is now named (it has no settings yet), like Firefox. GNOME Web is listed as needing nothing. Brave and Opera use Chromium's portal ID, `org.chromium.Chromium`, and Vivaldi `com.vivaldi.Vivaldi`, so they're covered on GNOME when installed, not only while running.
+
 - **`--allow`, and apps without an app ID**
   `--allow ID` stores the portal camera permission for one browser, for a settings window's Allow button: for a stored "no", or "not set" on GNOME, where the dialog can't appear. It's recorded, so `--undo` puts back what was there.
   The portal stores some apps under an empty ID: those it can't name, such as Firefox on LXQt, which doesn't start apps in their own systemd unit. That entry is now shown as `(no app ID)` (in `--status` as `id=` with nothing after it), and a "no" stored there is offered for removal, always asking first, like other stored "no"s. A "yes" is never added there by itself, as it covers every unnamed app. `--allow ''` clears a "no" there.

@@ -77,6 +77,19 @@ Chrome keeps its flags in each profile's `Local State` file, which it rewrites w
 
 It needs `python3` to edit the file. Without it, it tells you to set the flag by hand: open `chrome://flags/#enable-webrtc-pipewire-camera`, set it to **Enabled**, then fully quit and reopen Chrome.
 
+### Microsoft Edge
+
+Edge has no entry for the PipeWire camera in `edge://flags`, so there's nothing to set in its `Local State`. The feature is built in, though: started with `--enable-features=WebRtcPipeWireCamera`, Edge uses the PipeWire camera. So the script puts that switch where Edge's launcher reads its start-up switches:
+
+- **The AUR package** (Arch, EndeavourOS, CachyOS): its launcher reads `~/.config/microsoft-edge-stable-flags.conf` (`-beta`, `-dev` for those). The script adds the switch there, or adds the feature to an `--enable-features=` line you already have (Chromium only takes the last one). The file can only hold switches: the launcher passes all of it, so there's no comment in it.
+- **Microsoft's own packages** (Ubuntu, Mint, Fedora): the launcher reads no such file, so the script makes a copy of Edge's menu entry in `~/.local/share/applications/` with the switch added. It's marked as the script's, it only applies when Edge is started from the menu, and it hides the system's entry until it's removed. A copy of your own is left alone.
+
+Edge doesn't rewrite either file, so it needn't be closed; the switch applies the next time it starts. `--undo` takes it out again (and removes a file or copy the script made).
+
+### Browsers never opened, and GNOME Web
+
+A Chrome-family browser that's installed but has never been opened has no settings yet. The script says so, like Firefox: open it once, close it, and run the script again. **GNOME Web** (Epiphany) always uses the camera through PipeWire and the portal, so it needs nothing and is listed as such.
+
 Versions before November 2026 changed the flag through `chromium-pipewire-camera` from Andy's Camera Relay. That tool skips the flag when it can't find libcamera's development files (on Fedora without `libcamera-devel`, for example) and isn't there at all once Camera Relay is uninstalled. `--undo` still hands changes those versions made back to it.
 
 ## Why "Waiting for your permission"
@@ -109,7 +122,7 @@ Where the IDs come from:
 - xdg-desktop-portal's `shared/xdp-app-info-snap.c` for snaps, and `shared/xdp-app-info-host.c`, which reads a normal app's ID from its systemd unit;
 - GNOME Shell's `js/ui/accessDialog.js` for the focus check.
 
-Storing "yes" for the app ID means the portal doesn't need the dialog. The script also finds other Chromium-based browsers (Brave, Edge, Vivaldi, Opera) if they're running when you run it, from the scope they create for themselves.
+Storing "yes" for the app ID means the portal doesn't need the dialog. Brave and Opera create their scope as `org.chromium.Chromium`, like Chromium, and Vivaldi as `com.vivaldi.Vivaldi`, so those are covered when they're installed. The script also finds other Chromium-based browsers (Edge, say) if they're running when you run it, from the scope they create for themselves.
 
 **Firefox installed as a normal package or Flatpak** isn't affected when it's started from the app menu, because its ID matches its window. **Started from a terminal**, it takes on the terminal's ID and GNOME refuses the dialog. No stored permission can fix that, so start it from the app menu.
 

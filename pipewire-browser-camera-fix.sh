@@ -35,7 +35,8 @@
 #   --enable TARGET, --disable TARGET
 #             turn one browser's setting on, or back to the browser's own
 #             default (snap Firefox: off). TARGET is a Chrome-family profile
-#             folder or a Firefox prefs.js, as --status lists them. Can be
+#             folder, a Firefox prefs.js or an Edge command (Edge's switch goes
+#             in its flags file or menu entry), as --status lists them. Can be
 #             given more than once; recorded for --undo like any change.
 #             Exits 1 if any target couldn't be changed (a browser running,
 #             say), with the reason
@@ -148,12 +149,13 @@ record() {
 }
 
 # Is there a record already for this profile or portal app ID? $1 is chrome,
-# firefox or portal, $2 the profile folder, prefs.js or app ID. The first
+# firefox, portal or edge, $2 the profile folder, prefs.js, app ID or Edge's
+# flags file or menu entry. The first
 # record holds the state from before this script's first change, so a later
 # run (after the user changed it back, say) adds no second one: --undo puts
 # back the original, not an in-between state.
 recorded() {
-    local kind rest
+    local kind rest f
     [[ -r "$STATE_FILE" ]] || return 1
     while IFS=' ' read -r kind rest; do
         case "$1:$kind" in
@@ -161,6 +163,8 @@ recorded() {
             firefox:firefox)          [[ "${rest% *}" == "$2" ]] && return 0 ;;
             portal:portal | portal:portal-was-no)
                                       [[ "$rest" == "$2" ]] && return 0 ;;
+            edge:edge-flags)          f=${rest#* }; [[ "${f#* }" == "$2" ]] && return 0 ;;
+            edge:edge-desktop)        [[ "$rest" == "$2" ]] && return 0 ;;
         esac
     done < "$STATE_FILE"
     return 1
@@ -237,8 +241,16 @@ browser_portal_app_ids() {
                 echo "com.google.Chrome${entry#*:}"
             fi
         done
-        if command -v chromium &>/dev/null || command -v chromium-browser &>/dev/null; then
+        # Brave and Opera name their scope org.chromium.Chromium too, and
+        # Vivaldi com.vivaldi.Vivaldi (seen on EndeavourOS, 23 Nov 2026), so
+        # installed is enough: they needn't be running when this runs.
+        if command -v chromium &>/dev/null || command -v chromium-browser &>/dev/null \
+           || command -v brave &>/dev/null || command -v brave-browser &>/dev/null \
+           || command -v opera &>/dev/null; then
             echo "org.chromium.Chromium"
+        fi
+        if command -v vivaldi &>/dev/null || command -v vivaldi-stable &>/dev/null; then
+            echo "com.vivaldi.Vivaldi"
         fi
         for name in firefox chromium brave; do
             if [[ -d "$snaps/$name/current" ]]; then
@@ -502,6 +514,226 @@ chromium_flag_tool() {
     fi
 }
 
+# Chrome-family browsers installed but never opened: no Local State yet, so
+# nothing to change. "label<TAB>command" for each native one found that way
+# (snap and Flatpak ones make their folders when first started too; they're
+# left out, as their commands aren't on PATH the same way).
+chrome_unopened() {
+    local entry cmd dir label
+    for entry in "google-chrome-stable:google-chrome:Google Chrome" \
+                 "google-chrome-beta:google-chrome-beta:Google Chrome Beta" \
+                 "google-chrome-unstable:google-chrome-unstable:Google Chrome Dev" \
+                 "chromium:chromium:Chromium" "chromium-browser:chromium:Chromium" \
+                 "brave:BraveSoftware/Brave-Browser:Brave" "brave-browser:BraveSoftware/Brave-Browser:Brave" \
+                 "vivaldi:vivaldi:Vivaldi" "vivaldi-stable:vivaldi:Vivaldi" "opera:opera:Opera"; do
+        cmd=${entry%%:*}; dir=${entry#*:}; label=${dir#*:}; dir=${dir%%:*}
+        command -v "$cmd" &>/dev/null || continue
+        [[ -f "${XDG_CONFIG_HOME:-$HOME/.config}/$dir/Local State" ]] && continue
+        printf '%s\t%s\n' "$label" "$cmd"
+    done | sort -u -t$'\t' -k1,1
+    return 0
+}
+
+# Browsers that use the camera through PipeWire with nothing to set: GNOME
+# Web (WebKitGTK always goes through PipeWire and the portal). One label each.
+pipewire_native_browsers() {
+    if command -v epiphany &>/dev/null || [[ -d "$HOME/.local/share/flatpak/app/org.gnome.Epiphany" ]] \
+       || [[ -d /var/lib/flatpak/app/org.gnome.Epiphany ]]; then
+        echo "GNOME Web"
+    fi
+    return 0
+}
+
+# ── Microsoft Edge ────────────────────────────────────────────────────────────
+# Edge doesn't list the PipeWire camera in edge://flags, so there's nothing to
+# set in its Local State, but the feature is built in: started with
+# --enable-features=WebRtcPipeWireCamera it uses the PipeWire camera (checked
+# on EndeavourOS, 23 Nov 2026). So the switch goes where Edge's launcher reads
+# its start-up switches:
+#   - the AUR package's launcher (Arch, EndeavourOS, CachyOS) reads
+#     $XDG_CONFIG_HOME/microsoft-edge-<channel>-flags.conf: the whole file,
+#     split on spaces (no comments), passed before the command line;
+#   - Microsoft's own packages don't: there it goes into a copy of Edge's menu
+#     entry in ~/.local/share/applications, marked as ours, which hides the
+#     system's entry until removed.
+# Chromium takes only the last --enable-features, so the feature is added to
+# an existing list rather than given as a second switch. Edge doesn't rewrite
+# either file, so it needn't be closed: the change applies at its next start.
+EDGE_FEATURE="WebRtcPipeWireCamera"
+EDGE_MARK="X-PipeWire-Browser-Camera-Fix=true"
+
+# "label<TAB>command" for each Edge channel installed.
+edge_launchers() {
+    local entry
+    for entry in "microsoft-edge-stable:Microsoft Edge" "microsoft-edge-beta:Microsoft Edge Beta" \
+                 "microsoft-edge-dev:Microsoft Edge Dev"; do
+        command -v "${entry%%:*}" &>/dev/null && printf '%s\t%s\n' "${entry#*:}" "${entry%%:*}"
+    done
+    return 0
+}
+
+# The flags file this channel's launcher reads, if it reads one.
+edge_flags_file() {
+    local launcher
+    launcher=$(command -v "$1" 2>/dev/null) || return 1
+    grep -qsF -- "$1-flags.conf" "$launcher" || return 1
+    echo "${XDG_CONFIG_HOME:-$HOME/.config}/$1-flags.conf"
+}
+
+# Microsoft's menu entry for this channel: microsoft-edge.desktop for stable.
+edge_desktop_name() {
+    case "$1" in
+        microsoft-edge-stable) echo microsoft-edge.desktop ;;
+        *)                     echo "$1.desktop" ;;      # microsoft-edge-beta.desktop, -dev
+    esac
+}
+edge_user_desktop() { echo "${XDG_DATA_HOME:-$HOME/.local/share}/applications/$(edge_desktop_name "$1")"; }
+edge_system_desktop() {
+    local dir name
+    name=$(edge_desktop_name "$1")
+    local IFS=:
+    for dir in ${EDGE_DATA_DIRS:-${XDG_DATA_DIRS:-/usr/local/share:/usr/share}}; do
+        [[ -f "$dir/applications/$name" ]] && { echo "$dir/applications/$name"; return 0; }
+    done
+    return 1
+}
+
+# edge_features MODE FILE KIND: MODE status (prints on/off), on or off; KIND
+# flags (the whole file) or desktop (its Exec= lines). on and off rewrite the
+# file atomically, keeping its mode; on creates a missing flags file.
+edge_features() {
+    python3 - "$@" "$EDGE_FEATURE" <<'EOF_PY'
+import os, re, sys, tempfile
+mode, path, kind, feature = sys.argv[1:5]
+try:
+    text = open(path, encoding="utf-8").read()
+except FileNotFoundError:
+    text = ""
+token = re.compile(r"(--enable-features=)(\S*)")
+
+def has(line):
+    return any(feature in m.group(2).split(",") for m in token.finditer(line))
+
+def edit(line):
+    if mode == "off":
+        def drop(m):
+            rest = [f for f in m.group(2).split(",") if f and f != feature]
+            return m.group(1) + ",".join(rest) if rest else ""
+        new = token.sub(drop, line)
+        return re.sub(r"[ \t]{2,}", " ", new).rstrip(" \t") if new != line else line
+    if has(line):
+        return line
+    matches = list(token.finditer(line))
+    if matches:                      # add to the last list: Chromium uses the last one
+        m = matches[-1]
+        joined = m.group(2) + ("," if m.group(2) else "") + feature
+        return line[:m.start(2)] + joined + line[m.end(2):]
+    return None                      # no list on this line
+
+lines = text.split("\n")
+if kind == "flags":
+    on = has(text)
+    if mode == "status":
+        print("on" if on else "off"); sys.exit(0)
+    if mode == "on" and not on:
+        for i in range(len(lines) - 1, -1, -1):
+            if token.search(lines[i]):
+                lines[i] = edit(lines[i]); break
+        else:
+            if lines and lines[-1] == "":
+                lines.pop()
+            lines += ["--enable-features=" + feature, ""]
+    elif mode == "off":
+        lines = [edit(l) for l in lines]
+        lines = [l for i, l in enumerate(lines) if l.strip() or i == len(lines) - 1]
+else:
+    execs = [i for i, l in enumerate(lines) if l.startswith("Exec=")]
+    on = bool(execs) and all(has(lines[i]) for i in execs)
+    if mode == "status":
+        print("on" if on else "off"); sys.exit(0)
+    for i in execs:
+        new = edit(lines[i])
+        if new is None:              # Exec=program args: the switch goes after the program
+            prog, _, args = lines[i][5:].partition(" ")
+            new = "Exec=" + prog + " --enable-features=" + feature + (" " + args if args else "")
+        lines[i] = new
+out = "\n".join(lines)
+d = os.path.dirname(path) or "."
+os.makedirs(d, exist_ok=True)
+fd, tmp = tempfile.mkstemp(dir=d, prefix="." + os.path.basename(path) + ".")
+with os.fdopen(fd, "w", encoding="utf-8") as f:
+    f.write(out)
+    f.flush(); os.fsync(f.fileno())
+os.chmod(tmp, os.stat(path).st_mode & 0o7777 if os.path.exists(path) else 0o644)
+os.replace(tmp, path)
+EOF_PY
+}
+
+# Edge's state for one channel: "on|off VIA FILE", VIA flags-file, menu-entry
+# (FILE: our copy, or the system entry it would be made from) or none.
+edge_state() {
+    local cmd="$1" file user
+    if file=$(edge_flags_file "$cmd"); then
+        echo "$(edge_features status "$file" flags 2>/dev/null || echo off) flags-file $file"
+        return 0
+    fi
+    user=$(edge_user_desktop "$cmd")
+    if [[ -f "$user" ]]; then
+        echo "$(edge_features status "$user" desktop 2>/dev/null || echo off) menu-entry $user"
+    elif file=$(edge_system_desktop "$cmd"); then
+        echo "off menu-entry $file"
+    else
+        echo "off none -"
+    fi
+}
+
+# edge_set CMD on|off LABEL: one line, ✓ or ⚠; recorded for --undo as
+# "edge-flags <before> <present|absent> <file>" or "edge-desktop <file>".
+edge_set() {
+    local cmd="$1" want="$2" label="$3" file user sys before existed
+    if ! command -v python3 &>/dev/null; then
+        echo "⚠ $label: can't change its start-up switches without python3"; return 1
+    fi
+    if file=$(edge_flags_file "$cmd"); then
+        before=$(edge_features status "$file" flags 2>/dev/null) || before=off
+        if [[ "$before" == "$want" ]]; then echo "✓ $label: already $want"; return 0; fi
+        [[ -e "$file" ]] && existed=present || existed=absent
+        if edge_features "$want" "$file" flags 2>/dev/null; then
+            recorded edge "$file" || record "edge-flags $before $existed $file"
+            # Nothing left in it (it was ours, or held only the switch): no
+            # file, which is what an empty one means to the launcher anyway.
+            [[ "$want" == off && -z "$(tr -d '[:space:]' < "$file")" ]] && rm -f "$file"
+            echo "✓ $label: PipeWire camera switch $([[ "$want" == on ]] && echo added to || echo removed from) ${file/#$HOME/\~}. It takes effect the next time Edge starts."
+            return 0
+        fi
+        echo "⚠ $label: could not update ${file/#$HOME/\~}"; return 1
+    fi
+    user=$(edge_user_desktop "$cmd")
+    if [[ "$want" == on ]]; then
+        if [[ -f "$user" ]] && ! grep -qxF "$EDGE_MARK" "$user"; then
+            if [[ "$(edge_features status "$user" desktop 2>/dev/null)" == on ]]; then echo "✓ $label: already on"; return 0; fi
+            echo "⚠ $label: you have your own copy of its menu entry (${user/#$HOME/\~}). Add --enable-features=$EDGE_FEATURE to its Exec= lines by hand."
+            return 1
+        fi
+        if [[ -f "$user" ]]; then echo "✓ $label: already on"; return 0; fi
+        if ! sys=$(edge_system_desktop "$cmd"); then
+            echo "⚠ $label: no menu entry to copy. Start it with --enable-features=$EDGE_FEATURE."; return 1
+        fi
+        mkdir -p "${user%/*}" && { cat "$sys"; echo "$EDGE_MARK"; } > "$user.tmp.$$" && mv -f "$user.tmp.$$" "$user" \
+            && edge_features on "$user" desktop 2>/dev/null || { rm -f "$user.tmp.$$" "$user"; echo "⚠ $label: could not write ${user/#$HOME/\~}"; return 1; }
+        recorded edge "$user" || record "edge-desktop $user"
+        echo "✓ $label: PipeWire camera switch added to its menu entry (${user/#$HOME/\~}). It takes effect the next time Edge is started from the menu."
+        return 0
+    fi
+    if [[ ! -f "$user" ]]; then echo "✓ $label: already off"; return 0; fi
+    if ! grep -qxF "$EDGE_MARK" "$user"; then
+        echo "⚠ $label: the switch is in your own copy of its menu entry (${user/#$HOME/\~}): remove it there by hand."
+        return 1
+    fi
+    rm -f "$user" && { echo "✓ $label: our copy of its menu entry removed; the system's entry is used again."; return 0; }
+    echo "⚠ $label: could not remove ${user/#$HOME/\~}"; return 1
+}
+
 # ── Checks and fixes ──────────────────────────────────────────────────────────
 
 check_environment() {
@@ -515,6 +747,35 @@ check_environment() {
         echo "    That is the \"Waiting for your permission\" hang — the portal"
         echo "    permission check below fixes it."
     fi
+}
+
+check_other_browsers() {
+    local line label cmd state
+    local -a unopened=() edges=() native=()
+    mapfile -t unopened < <(chrome_unopened)
+    mapfile -t edges < <(edge_launchers)
+    mapfile -t native < <(pipewire_native_browsers)
+    (( ${#unopened[@]} + ${#edges[@]} + ${#native[@]} )) || return 0
+    section "Other browsers"
+    for line in "${unopened[@]}"; do
+        printf '  %-20s %s\n' "${line%%$'\t'*}:" "installed, never opened: open it once and close it, then run this again"
+    done
+    for label in "${native[@]}"; do
+        printf '  %-20s %s\n' "$label:" "uses the camera through PipeWire by itself: nothing to set"
+    done
+    for line in "${edges[@]}"; do
+        label=${line%%$'\t'*}; cmd=${line#*$'\t'}
+        state=$(edge_state "$cmd")
+        case "$state" in
+            on*)         printf '  %-20s %s\n' "$label:" "PipeWire camera switch ON (${state#* })" ;;
+            "off none"*) printf '  %-20s %s\n' "$label:" "no flags file or menu entry to add the switch to: start it with --enable-features=$EDGE_FEATURE" ;;
+            *)           printf '  %-20s %s\n' "$label:" "PipeWire camera switch off (Edge has no flags-page entry for it)"
+                         [[ "$MODE" == check ]] && continue
+                         if ask "Add the PipeWire camera switch to $label (${state#* })?"; then
+                             edge_set "$cmd" on "$label" | sed 's/^/  /'
+                         fi ;;
+        esac
+    done
 }
 
 check_chromium_flag() {
@@ -858,6 +1119,31 @@ undo_changes() {
                 else
                     undo_failed "$line" "$(profile_label "$prefs"): couldn't put the pref back to ${prev}"
                 fi ;;
+            edge-flags)
+                # "edge-flags <on|off before> <present|absent before> <file>"
+                prev=${rest%% *}; rest=${rest#* }; state=${rest%% *}; prefs=${rest#* }
+                if [[ ! -e "$prefs" && "$prev" == off ]]; then
+                    echo "  – ${prefs/#$HOME/\~} is gone, nothing to put back"; continue
+                fi
+                if edge_features "$prev" "$prefs" flags 2>/dev/null; then
+                    if [[ "$prev" == off && -z "$(tr -d '[:space:]' < "$prefs")" ]]; then
+                        rm -f "$prefs"
+                    fi
+                    echo "  ✓ Edge: PipeWire camera switch $([[ "$prev" == on ]] && echo back in || echo taken out of) ${prefs/#$HOME/\~}"
+                else
+                    undo_failed "$line" "Edge: couldn't put ${prefs/#$HOME/\~} back"
+                fi ;;
+            edge-desktop)
+                # "edge-desktop <our copy of Edge's menu entry>"
+                if [[ ! -f "$rest" ]]; then
+                    echo "  – ${rest/#$HOME/\~} is gone, nothing to put back"
+                elif ! grep -qxF "$EDGE_MARK" "$rest"; then
+                    echo "  – ${rest/#$HOME/\~} isn't ours any more, left as it is"
+                elif rm -f "$rest"; then
+                    echo "  ✓ Edge: our copy of its menu entry removed"
+                else
+                    undo_failed "$line" "Edge: couldn't remove ${rest/#$HOME/\~}"
+                fi ;;
             chrome)
                 # "chrome <state before> <profile folder>"
                 prev="${rest%% *}"
@@ -937,7 +1223,11 @@ undo_changes() {
 # settings window to read. Changes nothing. Lines (keys may be added later;
 # readers should ignore ones they don't know):
 #   chrome         label= target=<profile folder> flag=on|off|disabled|unreadable running=yes|no
+#                  (Microsoft Edge: target=<its command>, via=flags-file|menu-entry|none,
+#                  flag=manual when via=none: no file to add the switch to)
 #   chrome-none    (no Chrome-family profile)        no-python   (can't read them)
+#   chrome-unopened label= (installed, never opened: no settings yet)
+#   pipewire-native label= (uses the camera through PipeWire with nothing to set: GNOME Web)
 #   firefox        label= target=<prefs.js> pref=on|off from=user.js|prefs.js|distro|default
 #                  distro=on|off|none kind=native|snap|flatpak profile=<folder name>
 #                  default=yes|no running=yes|no
@@ -971,6 +1261,25 @@ status_report() {
                 "$(chrome_running "$dir" && echo yes || echo no)"
         done
     fi
+
+    # Edge, as a chrome line: flag is its start-up switch, via says where it
+    # goes (flags-file, menu-entry, or none: no button), target is the command
+    # for --enable/--disable. Edge doesn't rewrite either file, so running=no.
+    local edge_line cmd estate
+    while IFS= read -r edge_line; do
+        [[ -n "$edge_line" ]] || continue
+        cmd=${edge_line#*$'\t'}
+        estate=$(edge_state "$cmd")
+        set -- $estate
+        printf 'chrome\tlabel=%s\ttarget=%s\tflag=%s\tvia=%s\trunning=no\n' "${edge_line%%$'\t'*}" "$cmd" \
+            "$([[ "$2" == none ]] && echo manual || echo "$1")" "$2"
+    done < <(edge_launchers)
+    while IFS= read -r line; do
+        [[ -n "$line" ]] && printf 'chrome-unopened\tlabel=%s\n' "${line%%$'\t'*}"
+    done < <(chrome_unopened)
+    while IFS= read -r label; do
+        [[ -n "$label" ]] && printf 'pipewire-native\tlabel=%s\n' "$label"
+    done < <(pipewire_native_browsers)
 
     mapfile -t files < <(firefox_prefs_files)
     if (( ${#files[@]} == 0 )); then
@@ -1083,12 +1392,20 @@ set_targets() {
     while IFS= read -r prefs; do
         [[ -n "$prefs" ]] && firefox_files[$prefs]=1
     done < <(firefox_prefs_files)
+    local -A edge_cmds=()
+    while IFS= read -r line; do
+        [[ -n "$line" ]] && edge_cmds[${line#*$'\t'}]=${line%%$'\t'*}
+    done < <(edge_launchers)
 
     for item in "${SET_TARGETS[@]}"; do
         want=${item%% *}
         target=${item#* }
         if [[ "$want" == allow ]]; then
             portal_allow "$target" || failed=1
+            continue
+        fi
+        if [[ -n "${edge_cmds[$target]:-}" ]]; then
+            edge_set "$target" "$want" "${edge_cmds[$target]}" || failed=1
             continue
         fi
         # A folder given with a trailing slash, or through a link, is still the profile.
@@ -1187,6 +1504,7 @@ fi
 
 check_environment
 check_chromium_flag
+check_other_browsers
 check_firefox_pref
 check_portal
 
