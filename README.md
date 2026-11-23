@@ -50,6 +50,7 @@ A settings window can show the same checks and change one browser at a time:
 ./pipewire-browser-camera-fix.sh --status                       # the checks as tab-separated lines; changes nothing
 ./pipewire-browser-camera-fix.sh --enable  ~/.config/google-chrome
 ./pipewire-browser-camera-fix.sh --disable ~/.mozilla/firefox/abc.default-release/prefs.js
+./pipewire-browser-camera-fix.sh --allow com.google.Chrome          # store the portal's "yes" for one browser
 ```
 
 `--status` prints one line per thing found, `KIND` then `key=value` fields, separated by tabs, for example:
@@ -63,6 +64,8 @@ portal	id=com.google.Chrome	state=yes
 The kinds are `chrome`, `firefox`, `firefox-none` (with `installed=yes` when Firefox is there but has never been opened), `firefox-unused`, `portal`, `chrome-none`, `portal-none`, `portal-unreachable` and `no-python`. The comment above `status_report` in the script lists every field. Ignore fields you don't know: more may be added.
 
 `--enable` and `--disable` take a `target` from `--status`: a Chrome-family profile folder, or a Firefox `prefs.js`. Only profiles the script finds itself are changed. `--enable` turns the flag or pref on; `--disable` puts it back to the browser's own default (snap Firefox: off). They refuse, with the reason, while that browser runs, for snap Firefox (`--enable`) and where a `user.js` decides, and exit 1 if any target wasn't changed. Each change is recorded like any other, so `--undo` still goes back to how things were before the first change.
+
+`--allow ID` stores the portal camera permission for one app ID that `--status` lists: for a stored "no", or for "not set" on a desktop that can't show the dialog (GNOME). `--allow ''` is the empty ID (below), and only clears a stored "no" there. It's recorded too, so `--undo` puts back what was there.
 
 ### The Chrome flag
 
@@ -109,6 +112,8 @@ Where the IDs come from:
 Storing "yes" for the app ID means the portal doesn't need the dialog. The script also finds other Chromium-based browsers (Brave, Edge, Vivaldi, Opera) if they're running when you run it, from the scope they create for themselves.
 
 **Firefox installed as a normal package or Flatpak** isn't affected when it's started from the app menu, because its ID matches its window. **Started from a terminal**, it takes on the terminal's ID and GNOME refuses the dialog. No stored permission can fix that, so start it from the app menu.
+
+**Apps without an app ID.** The portal takes a normal app's ID from the systemd unit it was started in. Desktops that don't start apps in their own unit (LXQt, for one) leave Firefox without an ID, and the portal stores its decision under the empty ID, shown as `(no app ID)`. That entry covers every app the portal can't name, so the script never adds a "yes" there by itself; it shows what's stored, and offers to clear a "no" (always asking).
 
 A stored **"no"** blocks the camera without asking. It may be your own choice, or a stale denial left by a portal crash ([Andycodeman#37](https://github.com/Andycodeman/samsung-galaxy-book-linux-fixes/issues/37)). The script never changes one without asking you, even with `--yes`.
 

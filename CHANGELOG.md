@@ -2,6 +2,10 @@
 
 ## Unreleased
 
+- **`--allow`, and apps without an app ID**
+  `--allow ID` stores the portal camera permission for one browser, for a settings window's Allow button: for a stored "no", or "not set" on GNOME, where the dialog can't appear. It's recorded, so `--undo` puts back what was there.
+  The portal stores some apps under an empty ID: those it can't name, such as Firefox on LXQt, which doesn't start apps in their own systemd unit. That entry is now shown as `(no app ID)` (in `--status` as `id=` with nothing after it), and a "no" stored there is offered for removal, always asking first, like other stored "no"s. A "yes" is never added there by itself, as it covers every unnamed app. `--allow ''` clears a "no" there.
+
 - **`--status`, `--enable` and `--disable`, for a settings window**
   `--status` prints the checks as tab-separated lines another program can read, and changes nothing. `--enable TARGET` and `--disable TARGET` change one browser profile: on, or back to the browser's own default (snap Firefox: off). They refuse, with the reason, while that browser runs, and exit 1 if a target wasn't changed. The changes are recorded, so `--undo` still puts back how things were before the first one. Made for galaxybook-intel-camera's tray, so a browser can be fixed after the install (once Chrome is closed, or Firefox has been opened once).
   `--undo` now also puts a Chrome flag back to Enabled when `--disable` turned off one you had enabled yourself.
