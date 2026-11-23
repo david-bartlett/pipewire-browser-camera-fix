@@ -172,6 +172,21 @@ recorded() {
 
 # ── Portal permission store ───────────────────────────────────────────────────
 
+# App IDs shown only when something is stored for them, never given a "yes" by
+# --yes: the empty ID (apps the portal can't name: Firefox on LXQt, which has
+# no app-<ID> systemd unit; it covers every such app), and Firefox's own IDs
+# (native Firefox on GNOME is stored as "firefox", Flatpak's as
+# org.mozilla.firefox, seen 23 Nov 2026; on Ubuntu 26.10's GNOME, Microsoft
+# Edge's request was stored under the empty ID too). Firefox gets the dialog, so
+# "not set" is fine for it; a stored "no" isn't, so that's shown and offered.
+PORTAL_STORED_ONLY=("" firefox org.mozilla.firefox)
+portal_id_label() {
+    case "$1" in
+        "") echo "(no app ID)" ;;
+        *)  echo "$1" ;;
+    esac
+}
+
 portal_store() {
     busctl --user --timeout=5 call "$PORTAL_STORE" "$PORTAL_STORE_PATH" "$PORTAL_STORE" "$@"
 }
@@ -243,7 +258,10 @@ browser_portal_app_ids() {
         done
         # Brave and Opera name their scope org.chromium.Chromium too, and
         # Vivaldi com.vivaldi.Vivaldi (seen on EndeavourOS, 23 Nov 2026), so
-        # installed is enough: they needn't be running when this runs.
+        # installed is enough: they needn't be running. Microsoft Edge's scope
+        # is org.chromium.Chromium as well, but on Ubuntu 26.10's GNOME its
+        # camera request was stored under the empty ID and worked with nothing
+        # set for org.chromium.Chromium, so Edge alone doesn't list it.
         if command -v chromium &>/dev/null || command -v chromium-browser &>/dev/null \
            || command -v brave &>/dev/null || command -v brave-browser &>/dev/null \
            || command -v opera &>/dev/null; then
@@ -987,7 +1005,7 @@ check_firefox_pref() {
 
 check_portal() {
     section "Portal camera permission"
-    local entries id state noid
+    local entries id state
     local -a ids=() unset_ids=() denied_ids=()
 
     if ! entries=$(portal_camera_entries); then
@@ -995,11 +1013,12 @@ check_portal() {
         return 0
     fi
     mapfile -t ids < <(browser_portal_app_ids)
-    # The empty ID: apps the portal can't name (no app-<ID> systemd unit, as
-    # for Firefox on LXQt). Only shown when something is stored for it; never
-    # allowed by --yes, as it covers every such app, not only browsers.
-    noid=$(portal_camera_state "$entries" "")
-    if (( ${#ids[@]} == 0 )) && [[ -z "$noid" ]]; then
+    # The IDs shown only when stored (PORTAL_STORED_ONLY), with what's stored.
+    local -a stored_only=()
+    for id in "${PORTAL_STORED_ONLY[@]}"; do
+        [[ -n "$(portal_camera_state "$entries" "$id")" ]] && stored_only+=("$id")
+    done
+    if (( ${#ids[@]} + ${#stored_only[@]} == 0 )); then
         echo "  No Chrome, Chromium or snap browser found — nothing needed."
         return 0
     fi
@@ -1012,14 +1031,17 @@ check_portal() {
             *)   printf '  %-28s %s (refused without asking)\n' "$id:" "$state"; denied_ids+=("$id") ;;
         esac
     done
-    if [[ -n "$noid" ]]; then
-        case "$noid" in
-            yes) printf '  %-28s allowed\n' "(no app ID):" ;;
-            *)   printf '  %-28s %s (refused without asking)\n' "(no app ID):" "$noid"; denied_ids+=("") ;;
+    for id in "${stored_only[@]}"; do
+        state=$(portal_camera_state "$entries" "$id")
+        case "$state" in
+            yes) printf '  %-28s allowed\n' "$(portal_id_label "$id"):" ;;
+            *)   printf '  %-28s %s (refused without asking)\n' "$(portal_id_label "$id"):" "$state"; denied_ids+=("$id") ;;
         esac
-        echo "  (no app ID) is for apps the portal can't name, such as Firefox on desktops"
-        echo "  that don't start apps in their own systemd unit (LXQt, for one)."
-    fi
+        if [[ -z "$id" ]]; then
+            echo "  (no app ID) is for apps the portal can't name, such as Firefox on desktops"
+            echo "  that don't start apps in their own systemd unit (LXQt, for one)."
+        fi
+    done
     if (( ${#unset_ids[@]} )); then
         echo "  On GNOME, \"not set\" means the browser waits forever at \"Waiting for"
         echo "  your permission\": GNOME won't show the portal's dialog for it."
@@ -1233,8 +1255,8 @@ undo_changes() {
 #                  default=yes|no running=yes|no
 #   firefox-none   installed=yes|no (no profile: never opened, or not installed)
 #   firefox-unused count=N reads=<folder Firefox uses instead>
-#   portal         id=<app ID> state=yes|no|ask|unset (id empty: apps the portal
-#                  can't name, such as Firefox on LXQt; listed only when stored)
+#   portal         id=<app ID> state=yes|no|ask|unset (the empty ID, firefox and
+#                  org.mozilla.firefox only when something is stored: PORTAL_STORED_ONLY)
 #   portal-none    (no browser needing it)          portal-unreachable
 status_report() {
     local line label dir state prefs eff sys sys_value="" distro kind
@@ -1314,19 +1336,23 @@ status_report() {
     if ! entries=$(portal_camera_entries); then
         echo "portal-unreachable"
     else
-        local -a ids=()
-        local noid
+        local -a ids=() stored=()
         mapfile -t ids < <(browser_portal_app_ids)
-        noid=$(portal_camera_state "$entries" "")
-        if (( ${#ids[@]} == 0 )) && [[ -z "$noid" ]]; then
+        for id in "${PORTAL_STORED_ONLY[@]}"; do
+            state=$(portal_camera_state "$entries" "$id")
+            [[ -n "$state" ]] && stored+=("$id=$state")
+        done
+        if (( ${#ids[@]} + ${#stored[@]} == 0 )); then
             echo "portal-none"
         fi
         for id in "${ids[@]}"; do
             state=$(portal_camera_state "$entries" "$id")
             printf 'portal\tid=%s\tstate=%s\n' "$id" "${state:-unset}"
         done
-        # Apps the portal can't name (Firefox on LXQt): only when stored.
-        [[ -n "$noid" ]] && printf 'portal\tid=\tstate=%s\n' "$noid"
+        # PORTAL_STORED_ONLY: only when something is stored for them.
+        for id in "${stored[@]}"; do
+            printf 'portal\tid=%s\tstate=%s\n' "${id%=*}" "${id##*=}"
+        done
     fi
     return 0
 }
@@ -1337,20 +1363,22 @@ status_report() {
 # app, so it's never added from nothing. Recorded like --yes and the
 # stored-"no" question, so --undo puts back what was there. One line, ✓ or ⚠.
 portal_allow() {
-    local id="$1" label="${1:-(no app ID)}" entries state known=0 x
+    local id="$1" label entries state known=0 is_stored_only=0 x
+    label=$(portal_id_label "$id")
     if ! entries=$(portal_camera_entries); then
         echo "⚠ $label: the permission store isn't reachable (no busctl, session bus or xdg-desktop-portal)"
         return 1
     fi
     state=$(portal_camera_state "$entries" "$id")
-    if [[ -n "$id" ]]; then
+    for x in "${PORTAL_STORED_ONLY[@]}"; do [[ "$x" == "$id" ]] && is_stored_only=1; done
+    if (( is_stored_only )); then
+        [[ "$state" == no ]] && known=1
+    else
         while IFS= read -r x; do [[ "$x" == "$id" ]] && known=1; done < <(browser_portal_app_ids)
-    elif [[ "$state" == no ]]; then
-        known=1
     fi
     if (( ! known )); then
-        if [[ -z "$id" ]]; then
-            echo "⚠ (no app ID): nothing refused there to clear"
+        if (( is_stored_only )); then
+            echo "⚠ $label: nothing refused there to clear"
         else
             echo "⚠ Not a browser app ID this script found: $id"
         fi
