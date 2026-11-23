@@ -462,6 +462,34 @@ chrome_profiles() {
     return 0
 }
 
+# Is the browser this profile folder belongs to still installed? Uninstalling
+# leaves the folder behind (Chromium on Fedora, 23 Nov 2026), and --status
+# shouldn't offer a row for a browser that's gone. Native: one of its commands
+# on PATH; snap: the snap mounted; Flatpak: the app installed (system or user).
+# SNAP_ROOT_DIR and FLATPAK_SYSTEM_DIR are for the tests.
+chrome_installed() {
+    local dir="$1" name app cmd
+    case "$dir" in
+        "$HOME"/snap/*)
+            name=${dir#"$HOME"/snap/}; name=${name%%/*}
+            [[ -d "${SNAP_ROOT_DIR:-/snap}/$name/current" ]]
+            return ;;
+        "$HOME"/.var/app/*)
+            app=${dir#"$HOME"/.var/app/}; app=${app%%/*}
+            [[ -d "${FLATPAK_SYSTEM_DIR:-/var/lib/flatpak}/app/$app" || -d "$HOME/.local/share/flatpak/app/$app" ]]
+            return ;;
+    esac
+    case "${dir##*/}" in
+        google-chrome)   set -- google-chrome-stable google-chrome ;;
+        chromium)        set -- chromium chromium-browser ;;
+        Brave-Browser)   set -- brave brave-browser brave-browser-stable ;;
+        vivaldi)         set -- vivaldi vivaldi-stable ;;
+        *)               set -- "${dir##*/}" ;;      # google-chrome-beta, opera, opera-beta…
+    esac
+    for cmd in "$@"; do command -v "$cmd" &>/dev/null && return 0; done
+    return 1
+}
+
 # Is the browser using this profile running? Chrome rewrites Local State when it
 # quits, so an edit made while it runs is lost. SingletonLock links to
 # "host-pid"; a Flatpak browser's pid is from inside its sandbox, so ask flatpak.
@@ -1255,6 +1283,7 @@ undo_changes() {
 #                  (Microsoft Edge: target=<its command>, via=flags-file|menu-entry|none,
 #                  flag=manual when via=none: no file to add the switch to)
 #   chrome-none    (no Chrome-family profile)        no-python   (can't read them)
+#                  (a profile whose browser isn't installed any more isn't listed)
 #   chrome-unopened label= (installed, never opened: no settings yet)
 #   pipewire-native label= (uses the camera through PipeWire with nothing to set: GNOME Web)
 #   firefox        label= target=<prefs.js> pref=on|off from=user.js|prefs.js|distro|default
@@ -1279,6 +1308,7 @@ status_report() {
         for line in "${profiles[@]}"; do
             label=${line%%$'\t'*}
             dir=${line#*$'\t'}
+            chrome_installed "$dir" || continue      # settings left behind by an uninstall
             state=$(chrome_flag "$dir" status 2>/dev/null) || state="unreadable"
             case "$state" in
                 ENABLED)   state=on ;;

@@ -155,14 +155,14 @@ run() {
         MODE="$mode"
         eval "$(sed -n '/^STATE_FILE=/,/^PORTAL_STORE_PATH=/p' "$SCRIPT")"
         eval "$(grep -E '^(EDGE_(FEATURE|MARK)|PORTAL_STORED_ONLY)=' "$SCRIPT")"
-        # shellcheck disable=SC2034  # read by edge_system_desktop
-        EDGE_DATA_DIRS="$d/share"
+        # shellcheck disable=SC2034  # read by edge_system_desktop, chrome_installed
+        EDGE_DATA_DIRS="$d/share" SNAP_ROOT_DIR="$d/snap" FLATPAK_SYSTEM_DIR="$d/flatpak"
         for fn in section answer_yes ask ask_always record recorded portal_store portal_camera_entries \
                   portal_camera_state portal_id_label running_chromium_scope_ids firefox_prefs_files \
                   firefox_pref_value firefox_running firefox_set_pref profile_label snap_profile \
                   flatpak_profile firefox_unused_profile firefox_default_profile \
                   firefox_system_default firefox_user_js_value firefox_status_label firefox_effective \
-                  chrome_profiles chrome_running chrome_flag \
+                  chrome_profiles chrome_installed chrome_running chrome_flag \
                   check_environment check_chromium_flag check_firefox_pref check_portal \
                   undo_changes status_report set_targets portal_allow \
                   chrome_unopened pipewire_native_browsers edge_launchers edge_flags_file edge_desktop_name \
@@ -591,7 +591,7 @@ add_chrome "$d" "$G" '["enable-webrtc-pipewire-camera@1"]'
 add_chrome "$d" "$C" '[]'
 add_profile "$d" .mozilla/firefox/abc.default-release
 add_profile "$d" snap/firefox/common/.mozilla/firefox/def.default
-add_bin "$d" google-chrome-stable
+add_bin "$d" google-chrome-stable; add_bin "$d" chromium
 run "$d" status
 l=$(line_of "$d" chrome "$d/home/$G")
 check "status: Chrome on, not running" '[[ "$(field "$l" flag)" == on && "$(field "$l" running)" == no && "$(field "$l" label)" == "Google Chrome" ]]'
@@ -711,6 +711,25 @@ run "$d" set "on $d/elsewhere" "on $d/home/$G"
 check "unknown target: refused and untouched, exit 1" \
     '[[ "$(cat "$d/rc")" == 1 && "$(cat "$d/elsewhere/Local State")" == "{\"browser\":{}}" ]] && grep -q "Not a browser profile this script found" "$d/out"'
 check "unknown target: the real one beside it still changed" '[[ "$(labs_of "$d" "$G")" == "enable-webrtc-pipewire-camera@1" ]]'
+
+# A profile left behind by an uninstall isn't offered in --status.
+d=$(new_env)
+add_chrome "$d" .config/chromium '["enable-webrtc-pipewire-camera@1"]'
+add_chrome "$d" "$G" '[]'
+add_bin "$d" google-chrome
+add_chrome "$d" snap/chromium/1/.config/chromium '[]'; ln -s 1 "$d/home/snap/chromium/current"
+add_chrome "$d" .var/app/com.brave.Browser/config/BraveSoftware/Brave-Browser '[]'
+run "$d" status
+check "status: Chromium's folder without Chromium installed: not listed" '[[ -z "$(line_of "$d" chrome "label=Chromium	")" ]]'
+check "status: Chrome found by its other command (google-chrome)" '[[ -n "$(line_of "$d" chrome "label=Google Chrome	")" ]]'
+check "status: snap and Flatpak folders without the snap or app: not listed" \
+    '! grep -q "(snap)\|(flatpak)" "$d/out"'
+add_snap "$d" chromium; mkdir -p "$d/flatpak/app/com.brave.Browser"
+run "$d" status
+check "status: with the snap and the Flatpak installed: listed" \
+    '[[ -n "$(line_of "$d" chrome "Chromium (snap)")" && -n "$(line_of "$d" chrome "Brave (flatpak)")" ]]'
+run "$d" check
+check "check: still names the left-behind Chromium profile (it shows what it finds)" 'grep -q "^  Chromium:" "$d/out"'
 
 # The empty app ID: apps the portal can't name (Firefox on LXQt).
 d=$(new_env)

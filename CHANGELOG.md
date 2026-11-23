@@ -2,6 +2,9 @@
 
 ## Unreleased
 
+- **`--status` lists only browsers that are installed**
+  Uninstalling a Chrome-family browser leaves its settings folder behind, and `--status` still listed it (Chromium on Fedora, so a settings window showed a row for a browser that was gone). A profile now counts only while its browser's command is on PATH, or its snap or Flatpak is installed. The interactive check still names every profile it finds.
+
 - **GNOME Web found by its menu entry**
   It was listed whenever an `epiphany` command existed, but Fedora's `epiphany-runtime` package has one without the browser. Now it's found by GNOME Web's menu entry, `org.gnome.Epiphany.desktop` (native, or a Flatpak's).
 
