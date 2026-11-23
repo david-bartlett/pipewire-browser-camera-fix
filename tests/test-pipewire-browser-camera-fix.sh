@@ -49,7 +49,7 @@ new_env() {
     local d="$TMP/env-$RANDOM$RANDOM" tool
     mkdir -p "$d/bin" "$d/home" "$d/proc" "$d/snap"
     : > "$d/store"
-    for tool in sort head tail readlink mkdir rm rmdir cat sed wc mv cp mktemp chmod tr awk python3 ln sync; do
+    for tool in sort head tail readlink mkdir rm rmdir cat sed wc mv cp mktemp chmod tr awk python3 ln sync id; do
         ln -s "$(command -v "$tool")" "$d/bin/$tool"
     done
     # grep, except when $d/prefs-write-fails exists: then the prefs.js filter
@@ -136,9 +136,14 @@ system_default() {
 }
 pref_in() { sed -n 's/^user_pref("media\.webrtc\.camera\.allow-pipewire", \(.*\));$/\1/p' "$1/home/$2/prefs.js"; }
 
-# Run the script's checks (or --undo) in env $1 with mode $2, stdin not a terminal.
+# Run the script's checks (or --undo, --status) in env $1 with mode $2, stdin
+# not a terminal. Mode "set" takes "on TARGET" / "off TARGET" items after it,
+# as --enable / --disable do.
 run() {
     local d="$1" mode="$2"
+    shift 2
+    # shellcheck disable=SC2034  # read by the evaluated set_targets
+    local -a SET_TARGETS=("$@")
     (
         PATH="$d/bin"
         HOME="$d/home"
@@ -152,20 +157,23 @@ run() {
                   portal_camera_state running_chromium_scope_ids firefox_prefs_files \
                   firefox_pref_value firefox_running firefox_set_pref profile_label snap_profile \
                   flatpak_profile firefox_unused_profile firefox_default_profile \
-                  firefox_system_default firefox_user_js_value firefox_status_label \
+                  firefox_system_default firefox_user_js_value firefox_status_label firefox_effective \
                   chrome_profiles chrome_running chrome_flag \
                   check_environment check_chromium_flag check_firefox_pref check_portal \
-                  undo_changes; do
+                  undo_changes status_report set_targets; do
             eval "$(extract_fn "$fn")"
         done
         eval "$(extract_fn browser_portal_app_ids | sed '1s/^browser_portal_app_ids()/real_ids()/')"
         browser_portal_app_ids() { real_ids "$d/proc" "$d/snap"; }
+        eval "$(extract_fn firefox_installed | sed '1s/^firefox_installed()/real_ff_installed()/')"
+        firefox_installed() { real_ff_installed "$d/snap"; }
         chromium_flag_tool() { echo "$d/flag-tool"; }
-        if [[ "$mode" == undo ]]; then
-            undo_changes
-        else
-            check_environment; check_chromium_flag; check_firefox_pref; check_portal
-        fi
+        case "$mode" in
+            undo)   undo_changes ;;
+            status) status_report ;;
+            set)    set_targets ;;
+            *)      check_environment; check_chromium_flag; check_firefox_pref; check_portal ;;
+        esac
     ) < /dev/null > "$d/out" 2>&1
     echo $? > "$d/rc"
 }
@@ -560,6 +568,152 @@ mkdir -p "$d/home/.mozilla/firefox/abc.default-release"
 echo 'user_pref("media.webrtc.camera.allow-pipewire", false);' > "$d/home/.mozilla/firefox/abc.default-release/prefs.js"
 run "$d" yes
 check "prefs.js with only our line: set to true" '[[ "$(pref_in "$d" .mozilla/firefox/abc.default-release)" == true ]]'
+
+# ── 9. --status, --enable, --disable (for a settings window) ──────────────────
+echo
+echo "--status, --enable, --disable"
+
+# line_of ENV KIND TEXT: the --status line of that kind containing TEXT.
+line_of() { grep -P "^$2\t" "$1/out" | grep -F -- "$3" | head -1; }
+# field LINE KEY: one key=value field of a --status line.
+field() { tr '\t' '\n' <<< "$1" | sed -n "s/^$2=//p"; }
+
+G=.config/google-chrome
+C=.config/chromium
+d=$(new_env)
+add_chrome "$d" "$G" '["enable-webrtc-pipewire-camera@1"]'
+add_chrome "$d" "$C" '[]'
+add_profile "$d" .mozilla/firefox/abc.default-release
+add_profile "$d" snap/firefox/common/.mozilla/firefox/def.default
+add_bin "$d" google-chrome-stable
+run "$d" status
+l=$(line_of "$d" chrome "$d/home/$G")
+check "status: Chrome on, not running" '[[ "$(field "$l" flag)" == on && "$(field "$l" running)" == no && "$(field "$l" label)" == "Google Chrome" ]]'
+l=$(line_of "$d" chrome "$d/home/$C")
+check "status: Chromium off" '[[ "$(field "$l" flag)" == off ]]'
+l=$(line_of "$d" firefox abc.default-release)
+check "status: native Firefox off, from Firefox's default" \
+    '[[ "$(field "$l" pref)" == off && "$(field "$l" from)" == default && "$(field "$l" kind)" == native && "$(field "$l" distro)" == none ]]'
+check "status: target is the prefs.js" '[[ "$(field "$l" target)" == "$d/home/.mozilla/firefox/abc.default-release/prefs.js" ]]'
+l=$(line_of "$d" firefox def.default)
+check "status: snap Firefox listed as snap" '[[ "$(field "$l" kind)" == snap && "$(field "$l" label)" == "Firefox (snap)" ]]'
+check "status: portal not set for Chrome" '[[ "$(field "$(line_of "$d" portal com.google.Chrome)" state)" == unset ]]'
+check "status: no banner, only status lines" '! grep -qvP "^(chrome|chrome-none|no-python|firefox|firefox-none|firefox-unused|portal|portal-none|portal-unreachable)(\t|$)" "$d/out"'
+check "status: changes nothing" '[[ -z "$(state_of "$d")" && ! -e "$d/home/$C/Local State.pipewire-browser-camera-fix.bak" && -z "$(perm_of "$d" com.google.Chrome)" ]]'
+touch "$d/firefox-running"; ln -s "myhost-$$" "$d/home/$G/SingletonLock"
+run "$d" status
+check "status: running browsers say so" \
+    '[[ "$(field "$(line_of "$d" chrome "$d/home/$G")" running)" == yes && "$(field "$(line_of "$d" firefox abc.default)" running)" == yes ]]'
+touch "$d/unreachable"
+run "$d" status
+check "status: portal unreachable" 'grep -qx portal-unreachable "$d/out"'
+
+d=$(new_env)
+run "$d" status
+check "status: no browsers, Firefox not installed" 'grep -qx chrome-none "$d/out" && grep -qxP "firefox-none\tinstalled=no" "$d/out"'
+add_bin "$d" firefox
+run "$d" status
+check "status: Firefox installed, never opened" 'grep -qxP "firefox-none\tinstalled=yes" "$d/out"'
+run "$d" yes
+check "check: Firefox never opened: told to open it once" 'grep -q "Open Firefox once and close it, then run this again" "$d/out"'
+
+# Fedora: the package turns the pref on; turning it off removes ours, so it's on again.
+d=$(new_env)
+add_profile "$d" .mozilla/firefox/abc.default-release true
+system_default "$d" usr/lib64/firefox/defaults/pref/firefox-redhat-default-prefs.js true
+run "$d" status
+# shellcheck disable=SC2034  # l is read by the check strings (eval)
+l=$(line_of "$d" firefox abc.default-release)
+check "status: Fedora's default shown as distro=on" '[[ "$(field "$l" distro)" == on && "$(field "$l" from)" == prefs.js ]]'
+FP="$d/home/.mozilla/firefox/abc.default-release/prefs.js"
+run "$d" set "off $FP"
+check "disable on Fedora: our line removed, back to the package's on" \
+    '[[ -z "$(pref_in "$d" .mozilla/firefox/abc.default-release)" ]] && grep -q "back to Firefox.s default (on)" "$d/out"'
+
+# The Chrome flag, one profile at a time.
+d=$(new_env)
+add_chrome "$d" "$G" '[]'
+add_chrome "$d" "$C" '[]'
+run "$d" set "on $d/home/$G"
+check "enable: Chrome flag on, exit 0" '[[ "$(labs_of "$d" "$G")" == "enable-webrtc-pipewire-camera@1" && "$(cat "$d/rc")" == 0 ]]'
+check "enable: other browser untouched" '[[ -z "$(labs_of "$d" "$C")" ]]'
+check "enable: rest of Local State kept" 'other_kept "$d" "$G"'
+check "enable: recorded for --undo" '[[ "$(state_of "$d")" == "chrome not-set $d/home/$G" ]]'
+run "$d" set "off $d/home/$G/"
+check "disable (trailing slash): back to Default" '[[ -z "$(labs_of "$d" "$G")" ]]'
+check "disable: still one record, the first state" '[[ "$(state_of "$d")" == "chrome not-set $d/home/$G" ]]'
+run "$d" set "off $d/home/$G"
+check "disable again: already at Default, exit 0" 'grep -q "already at Default" "$d/out" && [[ "$(cat "$d/rc")" == 0 ]]'
+
+# A flag the user enabled themselves, turned off here: --undo turns it back on.
+d=$(new_env)
+add_chrome "$d" "$G" '["enable-webrtc-pipewire-camera@1"]'
+run "$d" set "off $d/home/$G"
+check "disable a hand-set flag: off, recorded as ENABLED" \
+    '[[ -z "$(labs_of "$d" "$G")" && "$(state_of "$d")" == "chrome ENABLED $d/home/$G" ]]'
+run "$d" undo
+check "--undo: hand-set flag back to Enabled" '[[ "$(labs_of "$d" "$G")" == "enable-webrtc-pipewire-camera@1" ]]'
+
+# A Disabled flag: an explicit --enable is the person saying so.
+d=$(new_env)
+add_chrome "$d" "$G" '["enable-webrtc-pipewire-camera@2"]'
+run "$d" set "on $d/home/$G"
+check "enable over Disabled: Enabled" '[[ "$(labs_of "$d" "$G")" == "enable-webrtc-pipewire-camera@1" ]]'
+run "$d" undo
+check "--undo: Disabled again" '[[ "$(labs_of "$d" "$G")" == "enable-webrtc-pipewire-camera@2" ]]'
+
+# Chrome running: refused, nothing changed.
+d=$(new_env)
+add_chrome "$d" "$G" '[]'
+ln -s "myhost-$$" "$d/home/$G/SingletonLock"
+run "$d" set "on $d/home/$G"
+check "Chrome running: refused, exit 1, says to quit it" \
+    '[[ "$(cat "$d/rc")" == 1 && -z "$(labs_of "$d" "$G")" ]] && grep -q "Google Chrome is running" "$d/out"'
+check "Chrome running: nothing recorded" '[[ -z "$(state_of "$d")" ]]'
+
+# Firefox, one profile at a time.
+d=$(new_env)
+add_profile "$d" .mozilla/firefox/abc.default-release
+add_profile "$d" snap/firefox/common/.mozilla/firefox/def.default true
+FP="$d/home/.mozilla/firefox/abc.default-release/prefs.js"
+SP="$d/home/snap/firefox/common/.mozilla/firefox/def.default/prefs.js"
+run "$d" set "on $FP"
+check "enable: Firefox pref on" '[[ "$(pref_in "$d" .mozilla/firefox/abc.default-release)" == true ]]'
+check "enable: snap profile untouched" '[[ "$(pref_in "$d" snap/firefox/common/.mozilla/firefox/def.default)" == true ]]'
+run "$d" set "off $FP"
+check "disable: Firefox pref removed (Firefox's default)" '[[ -z "$(pref_in "$d" .mozilla/firefox/abc.default-release)" ]]'
+check "disable: one record, the first state" '[[ "$(state_of "$d")" == "firefox $FP unset" ]]'
+run "$d" set "on $SP"
+check "enable snap Firefox: refused, exit 1" \
+    '[[ "$(cat "$d/rc")" == 1 ]] && grep -q "snap Firefox crashes" "$d/out" && [[ "$(pref_in "$d" snap/firefox/common/.mozilla/firefox/def.default)" == true ]]'
+run "$d" set "off $SP"
+check "disable snap Firefox: set to false" '[[ "$(pref_in "$d" snap/firefox/common/.mozilla/firefox/def.default)" == false ]]'
+touch "$d/firefox-running"
+run "$d" set "on $FP"
+check "Firefox running: refused, exit 1, prefs.js unchanged" \
+    '[[ "$(cat "$d/rc")" == 1 && -z "$(pref_in "$d" .mozilla/firefox/abc.default-release)" ]] && grep -q "Firefox is running" "$d/out"'
+rm -f "$d/firefox-running"
+echo 'user_pref("media.webrtc.camera.allow-pipewire", false);' > "${FP%/prefs.js}/user.js"
+run "$d" set "on $FP"
+check "user.js decides: refused, exit 1" '[[ "$(cat "$d/rc")" == 1 ]] && grep -q "Edit that user.js line by hand" "$d/out"'
+
+# Anything that isn't a profile the script finds is left alone.
+d=$(new_env)
+add_chrome "$d" "$G" '[]'
+mkdir -p "$d/elsewhere"; printf '{"browser":{}}' > "$d/elsewhere/Local State"
+run "$d" set "on $d/elsewhere" "on $d/home/$G"
+check "unknown target: refused and untouched, exit 1" \
+    '[[ "$(cat "$d/rc")" == 1 && "$(cat "$d/elsewhere/Local State")" == "{\"browser\":{}}" ]] && grep -q "Not a browser profile this script found" "$d/out"'
+check "unknown target: the real one beside it still changed" '[[ "$(labs_of "$d" "$G")" == "enable-webrtc-pipewire-camera@1" ]]'
+
+# The options themselves.
+for args in "--enable" "--status --check" "--yes --enable x" "--undo --status"; do
+    # shellcheck disable=SC2086  # the options are meant to split
+    bash "$SCRIPT" $args &>/dev/null
+    # shellcheck disable=SC2034  # read by check (eval)
+    rc=$?
+    check "\"$args\": refused with a usage message (exit 2)" '[[ $rc == 2 ]]'
+done
 
 # Enter alone: yes for the fixes the script is run for, no for removing a stored "no".
 eval "$(extract_fn answer_yes)"

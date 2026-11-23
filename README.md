@@ -36,9 +36,33 @@ Run it as yourself, not with `sudo`:
 ./pipewire-browser-camera-fix.sh --undo     # put back what it changed
 ```
 
-Then quit each browser completely and reopen it **from the app menu, not a terminal**. If you use Andy's fixes and there's still no camera, run `camera-relay doctor`.
+Then quit each browser completely and reopen it **from the app menu, not a terminal**. If there's still no camera, run `camera-relay doctor` (Andy's fixes) or `galaxybook-camera doctor` (galaxybook-intel-camera).
+
+**Firefox never opened yet?** On a new install Firefox has no profile until it's first started, so there's nothing to change. The script says so: open Firefox once, close it, and run the script again.
 
 It needs `busctl`, which comes with systemd.
+
+### For other programs: `--status`, `--enable`, `--disable`
+
+A settings window can show the same checks and change one browser at a time:
+
+```bash
+./pipewire-browser-camera-fix.sh --status                       # the checks as tab-separated lines; changes nothing
+./pipewire-browser-camera-fix.sh --enable  ~/.config/google-chrome
+./pipewire-browser-camera-fix.sh --disable ~/.mozilla/firefox/abc.default-release/prefs.js
+```
+
+`--status` prints one line per thing found, `KIND` then `key=value` fields, separated by tabs, for example:
+
+```
+chrome	label=Google Chrome	target=/home/me/.config/google-chrome	flag=off	running=yes
+firefox	label=Firefox	target=/home/me/.mozilla/firefox/abc.default-release/prefs.js	pref=off	from=default	distro=none	kind=native	profile=abc.default-release	default=yes	running=no
+portal	id=com.google.Chrome	state=yes
+```
+
+The kinds are `chrome`, `firefox`, `firefox-none` (with `installed=yes` when Firefox is there but has never been opened), `firefox-unused`, `portal`, `chrome-none`, `portal-none`, `portal-unreachable` and `no-python`. The comment above `status_report` in the script lists every field. Ignore fields you don't know: more may be added.
+
+`--enable` and `--disable` take a `target` from `--status`: a Chrome-family profile folder, or a Firefox `prefs.js`. Only profiles the script finds itself are changed. `--enable` turns the flag or pref on; `--disable` puts it back to the browser's own default (snap Firefox: off). They refuse, with the reason, while that browser runs, for snap Firefox (`--enable`) and where a `user.js` decides, and exit 1 if any target wasn't changed. Each change is recorded like any other, so `--undo` still goes back to how things were before the first change.
 
 ### The Chrome flag
 
@@ -118,7 +142,7 @@ The list of changes is kept in `~/.local/state/pipewire-browser-camera-fix/chang
 - it removes the portal permissions it added;
 - it puts a "no" it changed back to "no";
 - it restores each Firefox pref to its previous value;
-- it puts each Chrome profile's flag back to what it was (Default, or Disabled) where the script changed it, and removes the backup.
+- it puts each Chrome profile's flag back to what it was (Default, Enabled or Disabled) where the script changed it, and removes the backup.
 
 Only the first change to each profile or browser ID is recorded, so running the script again later (after you changed something back, say) doesn't replace what it was before the first run.
 
@@ -140,4 +164,4 @@ Changes made before the project was renamed are in `~/.local/state/browser-camer
 ./tests/test-pipewire-browser-camera-fix.sh
 ```
 
-These need no browser, portal or session bus. They cover the app IDs, stored decisions, Firefox profiles (including Firefox running, profiles Firefox doesn't use, package defaults and `user.js`), the Chrome flag, `--check` and `--undo` (including what it keeps when something can't be put back).
+These need no browser, portal or session bus. They cover the app IDs, stored decisions, Firefox profiles (including Firefox running, profiles Firefox doesn't use, package defaults and `user.js`), the Chrome flag, `--check` and `--undo` (including what it keeps when something can't be put back), and `--status`, `--enable` and `--disable`.

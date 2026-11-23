@@ -2,6 +2,16 @@
 
 ## Unreleased
 
+- **`--status`, `--enable` and `--disable`, for a settings window**
+  `--status` prints the checks as tab-separated lines another program can read, and changes nothing. `--enable TARGET` and `--disable TARGET` change one browser profile: on, or back to the browser's own default (snap Firefox: off). They refuse, with the reason, while that browser runs, and exit 1 if a target wasn't changed. The changes are recorded, so `--undo` still puts back how things were before the first one. Made for galaxybook-intel-camera's tray, so a browser can be fixed after the install (once Chrome is closed, or Firefox has been opened once).
+  `--undo` now also puts a Chrome flag back to Enabled when `--disable` turned off one you had enabled yourself.
+
+- **Firefox never opened: says what to do**
+  On a new install Firefox has no profile until it's first started. Instead of "No Firefox profile found.", the script now says Firefox hasn't been opened yet: open it once, close it, and run the script again. "No Firefox profile found." is kept for when Firefox isn't installed.
+
+- **"Still no camera?" also points to `galaxybook-camera doctor`**
+  The last hint looked only for Andy's `camera-relay`. With galaxybook-intel-camera's relay installed, it now suggests `galaxybook-camera doctor`.
+
 - **Firefox's prefs.js is never replaced by a part-written copy**
   On a full disk, changing the PipeWire pref (or `--undo` putting it back) could replace `prefs.js` with the part that had been written, and say nothing. Every step is now checked, and the new copy is flushed to disk before it replaces the original. If anything fails, `prefs.js` stays as it was, the change is reported, and `--undo` keeps it for the next run. The one-time backup is made the same way.
 

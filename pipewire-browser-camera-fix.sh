@@ -19,7 +19,8 @@
 #      user journal shows "Only the focused app is allowed to show a system
 #      access dialog".
 #
-# Usage: pipewire-browser-camera-fix.sh [--check | --yes | --undo]
+# Usage: pipewire-browser-camera-fix.sh [--check | --yes | --undo | --status]
+#        pipewire-browser-camera-fix.sh --enable TARGET [--disable TARGET]...
 #
 #   (none)    check, then ask before each change
 #   --check   check only, change nothing
@@ -28,6 +29,15 @@
 #   --undo    put back everything this script changed; anything it can't (a
 #             browser running, the portal unreachable) stays recorded for the
 #             next --undo, and it exits 1
+#   --status  the same checks as --check, as tab-separated lines for other
+#             programs (a settings window, say); changes nothing
+#   --enable TARGET, --disable TARGET
+#             turn one browser's setting on, or back to the browser's own
+#             default (snap Firefox: off). TARGET is a Chrome-family profile
+#             folder or a Firefox prefs.js, as --status lists them. Can be
+#             given more than once; recorded for --undo like any change.
+#             Exits 1 if any target couldn't be changed (a browser running,
+#             say), with the reason
 #
 # Run it as yourself, not with sudo: it edits your browser profiles and talks
 # to the portal on your session bus.
@@ -47,18 +57,36 @@ PORTAL_STORE="org.freedesktop.impl.portal.PermissionStore"
 PORTAL_STORE_PATH="/org/freedesktop/impl/portal/PermissionStore"
 
 MODE="fix"
-for arg in "$@"; do
-    case "$arg" in
-        --check) MODE="check" ;;
-        --yes)   MODE="yes" ;;
-        --undo)  MODE="undo" ;;
+SET_TARGETS=()     # "on TARGET" / "off TARGET", for --enable / --disable
+set_mode() {
+    if [[ "$MODE" != fix && "$MODE" != "$1" ]]; then
+        echo "Use one of --check, --yes, --undo, --status, or --enable/--disable (try --help)" >&2
+        exit 2
+    fi
+    MODE="$1"
+}
+while (( $# )); do
+    case "$1" in
+        --check)  set_mode check ;;
+        --yes)    set_mode yes ;;
+        --undo)   set_mode undo ;;
+        --status) set_mode status ;;
+        --enable | --disable)
+            if [[ -z "${2:-}" ]]; then
+                echo "$1 needs a target: a profile folder or prefs.js from --status" >&2
+                exit 2
+            fi
+            set_mode set
+            if [[ "$1" == --enable ]]; then SET_TARGETS+=("on $2"); else SET_TARGETS+=("off $2"); fi
+            shift ;;
         -h|--help)
             sed -n '/^# Usage:/,/^# Run it/p' "${BASH_SOURCE[0]}" | sed 's/^# \?//'
             exit 0 ;;
         *)
-            echo "Unknown option: $arg (try --help)" >&2
+            echo "Unknown option: $1 (try --help)" >&2
             exit 2 ;;
     esac
+    shift
 done
 
 if [[ $EUID -eq 0 ]]; then
@@ -298,6 +326,18 @@ firefox_pref_value() {
         "$1" 2>/dev/null | tail -1
 }
 
+# Is Firefox installed at all (native, snap or Flatpak)? Tells "never opened"
+# (no profile yet) from "not installed" when no profile is found. $1 is the
+# snap mount root, for the tests.
+# shellcheck disable=SC2120  # the tests pass the snap root
+firefox_installed() {
+    local snaps="${1:-/snap}"
+    command -v firefox &>/dev/null || command -v firefox-esr &>/dev/null \
+        || [[ -d "$snaps/firefox/current" ]] \
+        || [[ -d "$HOME/.local/share/flatpak/app/org.mozilla.firefox" ]] \
+        || [[ -d /var/lib/flatpak/app/org.mozilla.firefox ]]
+}
+
 # Firefox rewrites prefs.js when it quits, so an edit made while it runs is lost.
 firefox_running() {
     pgrep -u "$(id -u)" -x 'firefox|firefox-bin|firefox-esr|GeckoMain' &>/dev/null
@@ -530,6 +570,25 @@ check_chromium_flag() {
 snap_profile() { [[ "$1" == "$HOME"/snap/* ]]; }
 flatpak_profile() { [[ "$1" == "$HOME"/.var/app/* ]]; }
 
+# The value Firefox uses for the pref in this profile, and where it comes from,
+# as "VALUE SOURCE": user.js, then prefs.js, then the native package's own
+# default ("distro": Fedora turns it on), then Firefox's ("default": off).
+# $2 is the package default's value (firefox_system_default), or empty.
+firefox_effective() {
+    local prefs="$1" sys_value="${2:-}" user_js value
+    user_js=$(firefox_user_js_value "$prefs")
+    value=$(firefox_pref_value "$prefs")
+    if [[ -n "$user_js" ]]; then
+        echo "$user_js user.js"
+    elif [[ -n "$value" ]]; then
+        echo "$value prefs.js"
+    elif [[ -n "$sys_value" ]] && ! snap_profile "$prefs" && ! flatpak_profile "$prefs"; then
+        echo "$sys_value distro"
+    else
+        echo "false default"
+    fi
+}
+
 # Short label for the status list, like the Chrome lines: "Firefox",
 # "Firefox (snap)", "Firefox (flatpak)". $2 set: also name the profile, for
 # when one kind of Firefox has more than one profile in use.
@@ -555,7 +614,13 @@ check_firefox_pref() {
     local sys sys_value="" snaps=0 unused=0 user_js_set=0
     mapfile -t files < <(firefox_prefs_files)
     if (( ${#files[@]} == 0 )); then
-        echo "  No Firefox profile found."
+        if firefox_installed; then
+            # A new install: Firefox makes its profile the first time it opens.
+            echo "  Firefox hasn't been opened yet, so it has no settings to change."
+            echo "  Open Firefox once and close it, then run this again."
+        else
+            echo "  No Firefox profile found."
+        fi
         return 0
     fi
     sys=$(firefox_system_default)
@@ -574,19 +639,9 @@ check_firefox_pref() {
     done
 
     for prefs in "${used[@]}"; do
-        value=$(firefox_pref_value "$prefs")
         user_js=$(firefox_user_js_value "$prefs")
-        # Where the value comes from: user.js, then prefs.js, then the native
-        # package's own default (Fedora turns it on), then Firefox's (off).
-        if [[ -n "$user_js" ]]; then
-            effective=$user_js
-        elif [[ -n "$value" ]]; then
-            effective=$value
-        elif [[ -n "$sys_value" ]] && ! snap_profile "$prefs" && ! flatpak_profile "$prefs"; then
-            effective=$sys_value
-        else
-            effective=false
-        fi
+        effective=$(firefox_effective "$prefs" "$sys_value")
+        effective=${effective%% *}
 
         kind=$(firefox_status_label "$prefs")
         if (( ${per_kind[$kind]} > 1 )); then
@@ -792,6 +847,14 @@ undo_changes() {
                             undo_failed "$line" "${dir/#$HOME/\~}: couldn't set the flag back to Disabled"
                             continue
                         fi ;;
+                    ENABLED)
+                        # Enabled before a --disable turned it off.
+                        if chrome_flag "$dir" set 1; then
+                            echo "  ✓ ${dir/#$HOME/\~}: flag back to Enabled"
+                        else
+                            undo_failed "$line" "${dir/#$HOME/\~}: couldn't set the flag back to Enabled"
+                            continue
+                        fi ;;
                     *)
                         if chrome_flag "$dir" remove; then
                             echo "  ✓ ${dir/#$HOME/\~}: flag back to Default"
@@ -840,7 +903,202 @@ undo_changes() {
     return 0
 }
 
+# ── For other programs: --status, --enable, --disable ─────────────────────────
+
+# One tab-separated line per thing found, "KIND<TAB>key=value<TAB>…", for a
+# settings window to read. Changes nothing. Lines (keys may be added later;
+# readers should ignore ones they don't know):
+#   chrome         label= target=<profile folder> flag=on|off|disabled|unreadable running=yes|no
+#   chrome-none    (no Chrome-family profile)        no-python   (can't read them)
+#   firefox        label= target=<prefs.js> pref=on|off from=user.js|prefs.js|distro|default
+#                  distro=on|off|none kind=native|snap|flatpak profile=<folder name>
+#                  default=yes|no running=yes|no
+#   firefox-none   installed=yes|no (no profile: never opened, or not installed)
+#   firefox-unused count=N reads=<folder Firefox uses instead>
+#   portal         id=<app ID> state=yes|no|ask|unset
+#   portal-none    (no browser needing it)          portal-unreachable
+status_report() {
+    local line label dir state prefs eff sys sys_value="" distro kind
+    local entries id
+    local -a profiles=() files=()
+
+    mapfile -t profiles < <(chrome_profiles)
+    if (( ${#profiles[@]} == 0 )); then
+        echo "chrome-none"
+    elif ! command -v python3 &>/dev/null; then
+        echo "no-python"
+    else
+        for line in "${profiles[@]}"; do
+            label=${line%%$'\t'*}
+            dir=${line#*$'\t'}
+            state=$(chrome_flag "$dir" status 2>/dev/null) || state="unreadable"
+            case "$state" in
+                ENABLED)   state=on ;;
+                DISABLED)  state=disabled ;;
+                "not set") state=off ;;
+                *)         state=unreadable ;;
+            esac
+            printf 'chrome\tlabel=%s\ttarget=%s\tflag=%s\trunning=%s\n' "$label" "$dir" "$state" \
+                "$(chrome_running "$dir" && echo yes || echo no)"
+        done
+    fi
+
+    mapfile -t files < <(firefox_prefs_files)
+    if (( ${#files[@]} == 0 )); then
+        printf 'firefox-none\tinstalled=%s\n' "$(firefox_installed && echo yes || echo no)"
+    else
+        sys=$(firefox_system_default)
+        [[ -n "$sys" ]] && sys_value=${sys%% *}
+        local unused=0 unused_root="" used_root running
+        running=$(firefox_running && echo yes || echo no)
+        for prefs in "${files[@]}"; do
+            if used_root=$(firefox_unused_profile "$prefs"); then
+                unused=$((unused + 1)); unused_root=$used_root
+                continue
+            fi
+            if snap_profile "$prefs"; then kind=snap
+            elif flatpak_profile "$prefs"; then kind=flatpak
+            else kind=native; fi
+            distro=none
+            if [[ "$kind" == native && -n "$sys_value" ]]; then
+                [[ "$sys_value" == true ]] && distro=on || distro=off
+            fi
+            eff=$(firefox_effective "$prefs" "$sys_value")
+            dir=${prefs%/prefs.js}
+            printf 'firefox\tlabel=%s\ttarget=%s\tpref=%s\tfrom=%s\tdistro=%s\tkind=%s\tprofile=%s\tdefault=%s\trunning=%s\n' \
+                "$(firefox_status_label "$prefs")" "$prefs" \
+                "$([[ "${eff%% *}" == true ]] && echo on || echo off)" "${eff#* }" "$distro" "$kind" \
+                "${dir##*/}" "$(firefox_default_profile "$prefs" && echo yes || echo no)" "$running"
+        done
+        (( unused )) && printf 'firefox-unused\tcount=%d\treads=%s\n' "$unused" "$unused_root"
+    fi
+
+    if ! entries=$(portal_camera_entries); then
+        echo "portal-unreachable"
+    else
+        local -a ids=()
+        mapfile -t ids < <(browser_portal_app_ids)
+        if (( ${#ids[@]} == 0 )); then
+            echo "portal-none"
+        fi
+        for id in "${ids[@]}"; do
+            state=$(portal_camera_state "$entries" "$id")
+            printf 'portal\tid=%s\tstate=%s\n' "$id" "${state:-unset}"
+        done
+    fi
+    return 0
+}
+
+# --enable / --disable: change only the targets named, each a profile this
+# script finds itself (nothing else is touched, whatever path is given).
+# "on" sets the flag or pref on; "off" puts it back to the browser's own
+# default (snap Firefox: off, as it crashes on PipeWire). The state before the
+# first change is recorded, so --undo still goes back to it. One line per
+# target, ✓ or ⚠ with the reason; exits 1 if any target wasn't changed.
+set_targets() {
+    local item want target line dir prefs before value eff label to sys sys_value="" failed=0
+    local -a flag_args=()
+    local -A chrome_dirs=() chrome_labels=() firefox_files=()
+    sys=$(firefox_system_default)
+    [[ -n "$sys" ]] && sys_value=${sys%% *}
+    while IFS= read -r line; do
+        [[ -n "$line" ]] || continue
+        chrome_dirs[${line#*$'\t'}]=1
+        chrome_labels[${line#*$'\t'}]=${line%%$'\t'*}
+    done < <(chrome_profiles)
+    while IFS= read -r prefs; do
+        [[ -n "$prefs" ]] && firefox_files[$prefs]=1
+    done < <(firefox_prefs_files)
+
+    for item in "${SET_TARGETS[@]}"; do
+        want=${item%% *}
+        target=${item#* }
+        # A folder given with a trailing slash, or through a link, is still the profile.
+        if [[ -d "$target" ]]; then
+            target=$(cd "$target" 2>/dev/null && pwd -P) || target=${item#* }
+        fi
+        if [[ -n "${chrome_dirs[$target]:-}" ]]; then
+            label=${chrome_labels[$target]}
+            dir=$target
+            if ! command -v python3 &>/dev/null; then
+                echo "⚠ $label: can't change the flag without python3"; failed=1; continue
+            fi
+            if chrome_running "$dir"; then
+                echo "⚠ $label is running. It rewrites its settings when it quits and would undo this. Quit it completely (tray icon too), then try again."
+                failed=1; continue
+            fi
+            before=$(chrome_flag "$dir" status 2>/dev/null) || before=""
+            if [[ -z "$before" ]]; then
+                echo "⚠ $label: couldn't read its Local State"; failed=1; continue
+            fi
+            if { [[ "$want" == on && "$before" == ENABLED ]] || [[ "$want" == off && "$before" == "not set" ]]; }; then
+                echo "✓ $label: already $([[ "$want" == on ]] && echo on || echo at Default)"
+                continue
+            fi
+            [[ -e "$dir/Local State$CHROME_BACKUP_SUFFIX" ]] \
+                || cp -p "$dir/Local State" "$dir/Local State$CHROME_BACKUP_SUFFIX" 2>/dev/null || true
+            if [[ "$want" == on ]]; then flag_args=(set 1); else flag_args=(remove); fi
+            if chrome_flag "$dir" "${flag_args[@]}" 2>/dev/null; then
+                recorded chrome "$dir" || record "chrome ${before// /-} $dir"
+                echo "✓ $label: flag $([[ "$want" == on ]] && echo enabled || echo back to Default)"
+            else
+                echo "⚠ $label: could not update Local State"; failed=1
+            fi
+        elif [[ -n "${firefox_files[$target]:-}" ]]; then
+            prefs=$target
+            label=$(profile_label "$prefs")
+            if firefox_unused_profile "$prefs" >/dev/null; then
+                echo "⚠ $label: Firefox doesn't use this profile"; failed=1; continue
+            fi
+            if [[ -n "$(firefox_user_js_value "$prefs")" ]]; then
+                echo "⚠ $label: a user.js sets the pref and wins over prefs.js at every start. Edit that user.js line by hand."
+                failed=1; continue
+            fi
+            if snap_profile "$prefs"; then
+                if [[ "$want" == on ]]; then
+                    echo "⚠ $label: snap Firefox crashes on the PipeWire camera, so the pref stays off there (it uses the V4L2 camera)."
+                    failed=1; continue
+                fi
+                to=false
+            elif [[ "$want" == on ]]; then
+                to=true
+            else
+                to="unset"
+            fi
+            value=$(firefox_pref_value "$prefs")
+            if [[ "${value:-unset}" == "$to" ]]; then
+                echo "✓ $label: already $([[ "$to" == true ]] && echo on || echo off)"
+                continue
+            fi
+            if firefox_running; then
+                echo "⚠ Firefox is running. It rewrites prefs.js when it quits and would undo this. Quit Firefox completely, then try again."
+                failed=1; continue
+            fi
+            if firefox_set_pref "$prefs" "$to"; then
+                recorded firefox "$prefs" || record "firefox $prefs ${value:-unset}"
+                eff=$(firefox_effective "$prefs" "$sys_value")
+                case "$to" in
+                    true)  echo "✓ $label: pref on" ;;
+                    false) echo "✓ $label: pref off" ;;
+                    *)     echo "✓ $label: pref back to Firefox's default ($([[ "${eff%% *}" == true ]] && echo on || echo off))" ;;
+                esac
+            else
+                echo "⚠ $label: could not update prefs.js"; failed=1
+            fi
+        else
+            echo "⚠ Not a browser profile this script found: $target"
+            failed=1
+        fi
+    done
+    return "$failed"
+}
+
 # ── Main ──────────────────────────────────────────────────────────────────────
+
+case "$MODE" in
+    status) status_report; exit ;;
+    set)    set_targets; exit ;;
+esac
 
 echo "pipewire-browser-camera-fix — Chrome, Chromium and Firefox on the PipeWire camera path"
 
@@ -861,7 +1119,9 @@ else
     echo "Done. Quit each browser completely and reopen it from the app menu"
     echo "(not from a terminal — a browser started from a terminal can take the"
     echo "terminal's identity, and GNOME refuses the portal dialog for it)."
-    if command -v camera-relay &>/dev/null; then
+    if command -v galaxybook-camera &>/dev/null; then
+        echo "Still no camera? Run: galaxybook-camera doctor"
+    elif command -v camera-relay &>/dev/null; then
         echo "Still no camera? Run: camera-relay doctor"
     fi
     echo "To put back what this script changed: $0 --undo"
