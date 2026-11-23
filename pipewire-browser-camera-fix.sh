@@ -21,6 +21,7 @@
 #
 # Usage: pipewire-browser-camera-fix.sh [--check | --yes | --undo | --status]
 #        pipewire-browser-camera-fix.sh --enable TARGET [--disable TARGET]...
+#        pipewire-browser-camera-fix.sh --allow ID...
 #
 #   (none)    check, then ask before each change
 #   --check   check only, change nothing
@@ -38,6 +39,11 @@
 #             given more than once; recorded for --undo like any change.
 #             Exits 1 if any target couldn't be changed (a browser running,
 #             say), with the reason
+#   --allow ID
+#             store a portal "yes" for one browser's app ID, as --status lists
+#             them: for a stored "no", or "not set" where the desktop can't show
+#             the dialog (GNOME). "--allow ''" is the empty ID (apps the portal
+#             can't name), only to clear a stored "no" there. Recorded for --undo
 #
 # Run it as yourself, not with sudo: it edits your browser profiles and talks
 # to the portal on your session bus.
@@ -60,7 +66,7 @@ MODE="fix"
 SET_TARGETS=()     # "on TARGET" / "off TARGET", for --enable / --disable
 set_mode() {
     if [[ "$MODE" != fix && "$MODE" != "$1" ]]; then
-        echo "Use one of --check, --yes, --undo, --status, or --enable/--disable (try --help)" >&2
+        echo "Use one of --check, --yes, --undo, --status, or --enable/--disable/--allow (try --help)" >&2
         exit 2
     fi
     MODE="$1"
@@ -78,6 +84,15 @@ while (( $# )); do
             fi
             set_mode set
             if [[ "$1" == --enable ]]; then SET_TARGETS+=("on $2"); else SET_TARGETS+=("off $2"); fi
+            shift ;;
+        --allow)
+            # The ID may be empty (apps the portal can't name), so only its presence counts.
+            if (( $# < 2 )); then
+                echo "--allow needs an app ID from --status (or '' for apps without one)" >&2
+                exit 2
+            fi
+            set_mode set
+            SET_TARGETS+=("allow $2")
             shift ;;
         -h|--help)
             sed -n '/^# Usage:/,/^# Run it/p' "${BASH_SOURCE[0]}" | sed 's/^# \?//'
@@ -711,7 +726,7 @@ check_firefox_pref() {
 
 check_portal() {
     section "Portal camera permission"
-    local entries id state
+    local entries id state noid
     local -a ids=() unset_ids=() denied_ids=()
 
     if ! entries=$(portal_camera_entries); then
@@ -719,7 +734,11 @@ check_portal() {
         return 0
     fi
     mapfile -t ids < <(browser_portal_app_ids)
-    if (( ${#ids[@]} == 0 )); then
+    # The empty ID: apps the portal can't name (no app-<ID> systemd unit, as
+    # for Firefox on LXQt). Only shown when something is stored for it; never
+    # allowed by --yes, as it covers every such app, not only browsers.
+    noid=$(portal_camera_state "$entries" "")
+    if (( ${#ids[@]} == 0 )) && [[ -z "$noid" ]]; then
         echo "  No Chrome, Chromium or snap browser found — nothing needed."
         return 0
     fi
@@ -732,6 +751,14 @@ check_portal() {
             *)   printf '  %-28s %s (refused without asking)\n' "$id:" "$state"; denied_ids+=("$id") ;;
         esac
     done
+    if [[ -n "$noid" ]]; then
+        case "$noid" in
+            yes) printf '  %-28s allowed\n' "(no app ID):" ;;
+            *)   printf '  %-28s %s (refused without asking)\n' "(no app ID):" "$noid"; denied_ids+=("") ;;
+        esac
+        echo "  (no app ID) is for apps the portal can't name, such as Firefox on desktops"
+        echo "  that don't start apps in their own systemd unit (LXQt, for one)."
+    fi
     if (( ${#unset_ids[@]} )); then
         echo "  On GNOME, \"not set\" means the browser waits forever at \"Waiting for"
         echo "  your permission\": GNOME won't show the portal's dialog for it."
@@ -754,12 +781,12 @@ check_portal() {
     # crash (Andycodeman/samsung-galaxy-book-linux-fixes#37). Only a person can
     # tell which, so this always asks — even under --yes.
     for id in "${denied_ids[@]}"; do
-        if ask_always "$id has a stored \"no\". Remove it and allow the camera?"; then
+        if ask_always "${id:-(no app ID)} has a stored \"no\". Remove it and allow the camera?"; then
             if portal_store SetPermission sbssas devices true camera "$id" 1 yes &>/dev/null; then
                 recorded portal "$id" || record "portal-was-no $id"
-                echo "  ✓ $id: allowed"
+                echo "  ✓ ${id:-(no app ID)}: allowed"
             else
-                echo "  ⚠ $id: could not change the permission"
+                echo "  ⚠ ${id:-(no app ID)}: could not change the permission"
             fi
         fi
     done
@@ -778,7 +805,7 @@ undo_changes() {
         echo "Nothing to undo — this script hasn't changed anything."
         return 0
     fi
-    local line kind rest entries id prefs prev tool dir state out failed=0
+    local line kind rest entries id plabel prefs prev tool dir state out failed=0
     local -a keep=()
 
     # undo_failed LINE MESSAGE: the change couldn't be undone; say why and keep it.
@@ -794,28 +821,29 @@ undo_changes() {
         case "$kind" in
             portal | portal-was-no)
                 id="$rest"
+                plabel=${id:-(no app ID)}
                 # Asked again for each record: an earlier one may have changed
                 # the store.
                 if ! entries=$(portal_camera_entries); then
-                    undo_failed "$line" "Portal: permission store not reachable — couldn't put back $id"
+                    undo_failed "$line" "Portal: permission store not reachable — couldn't put back $plabel"
                     continue
                 fi
                 state=$(portal_camera_state "$entries" "$id")
                 if [[ "$state" != "yes" ]]; then
                     # Not what this script set: changed since, or removed.
-                    echo "  – Portal: $id is ${state:-not set} now, left as it is"
+                    echo "  – Portal: $plabel is ${state:-not set} now, left as it is"
                     continue
                 fi
                 if [[ "$kind" == portal ]]; then
                     if portal_store DeletePermission sss devices camera "$id" &>/dev/null; then
-                        echo "  ✓ Portal: removed the permission for $id"
+                        echo "  ✓ Portal: removed the permission for $plabel"
                     else
-                        undo_failed "$line" "Portal: couldn't remove the permission for $id"
+                        undo_failed "$line" "Portal: couldn't remove the permission for $plabel"
                     fi
                 elif portal_store SetPermission sbssas devices true camera "$id" 1 no &>/dev/null; then
-                    echo "  ✓ Portal: $id back to \"no\""
+                    echo "  ✓ Portal: $plabel back to \"no\""
                 else
-                    undo_failed "$line" "Portal: couldn't set $id back to \"no\""
+                    undo_failed "$line" "Portal: couldn't set $plabel back to \"no\""
                 fi ;;
             firefox)
                 prefs="${rest% *}"
@@ -915,7 +943,8 @@ undo_changes() {
 #                  default=yes|no running=yes|no
 #   firefox-none   installed=yes|no (no profile: never opened, or not installed)
 #   firefox-unused count=N reads=<folder Firefox uses instead>
-#   portal         id=<app ID> state=yes|no|ask|unset
+#   portal         id=<app ID> state=yes|no|ask|unset (id empty: apps the portal
+#                  can't name, such as Firefox on LXQt; listed only when stored)
 #   portal-none    (no browser needing it)          portal-unreachable
 status_report() {
     local line label dir state prefs eff sys sys_value="" distro kind
@@ -977,16 +1006,61 @@ status_report() {
         echo "portal-unreachable"
     else
         local -a ids=()
+        local noid
         mapfile -t ids < <(browser_portal_app_ids)
-        if (( ${#ids[@]} == 0 )); then
+        noid=$(portal_camera_state "$entries" "")
+        if (( ${#ids[@]} == 0 )) && [[ -z "$noid" ]]; then
             echo "portal-none"
         fi
         for id in "${ids[@]}"; do
             state=$(portal_camera_state "$entries" "$id")
             printf 'portal\tid=%s\tstate=%s\n' "$id" "${state:-unset}"
         done
+        # Apps the portal can't name (Firefox on LXQt): only when stored.
+        [[ -n "$noid" ]] && printf 'portal\tid=\tstate=%s\n' "$noid"
     fi
     return 0
+}
+
+# --allow ID: a portal "yes" for one app ID the script lists itself (a
+# browser's, from browser_portal_app_ids), or for the empty ID (apps the portal
+# can't name) only when a "no" is stored there: a "yes" there covers every such
+# app, so it's never added from nothing. Recorded like --yes and the
+# stored-"no" question, so --undo puts back what was there. One line, ✓ or ⚠.
+portal_allow() {
+    local id="$1" label="${1:-(no app ID)}" entries state known=0 x
+    if ! entries=$(portal_camera_entries); then
+        echo "⚠ $label: the permission store isn't reachable (no busctl, session bus or xdg-desktop-portal)"
+        return 1
+    fi
+    state=$(portal_camera_state "$entries" "$id")
+    if [[ -n "$id" ]]; then
+        while IFS= read -r x; do [[ "$x" == "$id" ]] && known=1; done < <(browser_portal_app_ids)
+    elif [[ "$state" == no ]]; then
+        known=1
+    fi
+    if (( ! known )); then
+        if [[ -z "$id" ]]; then
+            echo "⚠ (no app ID): nothing refused there to clear"
+        else
+            echo "⚠ Not a browser app ID this script found: $id"
+        fi
+        return 1
+    fi
+    if [[ "$state" == yes ]]; then
+        echo "✓ $label: already allowed"
+        return 0
+    fi
+    if ! portal_store SetPermission sbssas devices true camera "$id" 1 yes &>/dev/null; then
+        echo "⚠ $label: could not store the permission"
+        return 1
+    fi
+    if [[ -n "$state" ]]; then
+        recorded portal "$id" || record "portal-was-no $id"
+    else
+        recorded portal "$id" || record "portal $id"
+    fi
+    echo "✓ $label: allowed"
 }
 
 # --enable / --disable: change only the targets named, each a profile this
@@ -1013,6 +1087,10 @@ set_targets() {
     for item in "${SET_TARGETS[@]}"; do
         want=${item%% *}
         target=${item#* }
+        if [[ "$want" == allow ]]; then
+            portal_allow "$target" || failed=1
+            continue
+        fi
         # A folder given with a trailing slash, or through a link, is still the profile.
         if [[ -d "$target" ]]; then
             target=$(cd "$target" 2>/dev/null && pwd -P) || target=${item#* }

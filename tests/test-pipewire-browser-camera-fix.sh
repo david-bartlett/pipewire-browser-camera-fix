@@ -41,7 +41,8 @@ trap 'rm -rf "$TMP"' EXIT
 echo "test-pipewire-browser-camera-fix ($SCRIPT)"
 
 # ── Harness ───────────────────────────────────────────────────────────────────
-# A fake home, a fake permission store behind a busctl stub ("ID PERM" lines),
+# A fake home, a fake permission store behind a busctl stub ("ID|PERM" lines;
+# the ID can be empty, as the portal stores apps it can't name),
 # a fake chromium-pipewire-camera (only for old "chrome-flag" records), fake
 # Chrome profiles (Local State files), and a PATH holding only the stubs plus the
 # real tools the script uses — so this machine's own browsers can't leak in.
@@ -74,15 +75,15 @@ case "\$method" in
     Lookup)
         [[ -s "\$store" ]] || { echo "Call failed: No entry for camera" >&2; exit 1; }
         out="a{sas}v \$(wc -l < "\$store")"
-        while read -r id perm; do out+=" \"\$id\" 1 \"\$perm\""; done < "\$store"
+        while IFS="|" read -r id perm; do out+=" \"\$id\" 1 \"\$perm\""; done < "\$store"
         echo "\$out y 0" ;;
     SetPermission)
         [[ -e "$d/store-readonly" ]] && { echo "Call failed: refused" >&2; exit 1; }
-        grep -v "^\$4 " "\$store" > "\$store.tmp"; mv "\$store.tmp" "\$store"
-        echo "\$4 \$6" >> "\$store" ;;
+        grep -v "^\$4|" "\$store" > "\$store.tmp"; mv "\$store.tmp" "\$store"
+        echo "\$4|\$6" >> "\$store" ;;
     DeletePermission)
         [[ -e "$d/store-readonly" ]] && { echo "Call failed: refused" >&2; exit 1; }
-        grep -v "^\$3 " "\$store" > "\$store.tmp"; mv "\$store.tmp" "\$store" ;;
+        grep -v "^\$3|" "\$store" > "\$store.tmp"; mv "\$store.tmp" "\$store" ;;
 esac
 EOF
     # pgrep: "running" while $d/firefox-running exists.
@@ -113,8 +114,8 @@ add_chrome() {
 labs_of() { python3 -c 'import json,sys; print(" ".join(json.load(open(sys.argv[1])).get("browser",{}).get("enabled_labs_experiments",[])))' "$1/home/$2/Local State"; }
 other_kept() { python3 -c 'import json,sys; sys.exit(json.load(open(sys.argv[1])).get("other") != {"keep":1})' "$1/home/$2/Local State"; }
 add_snap()  { mkdir -p "$1/snap/$2/current"; }
-store_set() { echo "$2 $3" >> "$1/store"; }
-perm_of()   { awk -v id="$2" '$1 == id { print $2 }' "$1/store"; }
+store_set() { echo "$2|$3" >> "$1/store"; }
+perm_of()   { awk -F'|' -v id="$2" '$1 == id { print $2 }' "$1/store"; }
 add_proc() {
     mkdir -p "$1/proc/$2"
     echo "$3" > "$1/proc/$2/cgroup"
@@ -160,7 +161,7 @@ run() {
                   firefox_system_default firefox_user_js_value firefox_status_label firefox_effective \
                   chrome_profiles chrome_running chrome_flag \
                   check_environment check_chromium_flag check_firefox_pref check_portal \
-                  undo_changes status_report set_targets; do
+                  undo_changes status_report set_targets portal_allow; do
             eval "$(extract_fn "$fn")"
         done
         eval "$(extract_fn browser_portal_app_ids | sed '1s/^browser_portal_app_ids()/real_ids()/')"
@@ -706,8 +707,71 @@ check "unknown target: refused and untouched, exit 1" \
     '[[ "$(cat "$d/rc")" == 1 && "$(cat "$d/elsewhere/Local State")" == "{\"browser\":{}}" ]] && grep -q "Not a browser profile this script found" "$d/out"'
 check "unknown target: the real one beside it still changed" '[[ "$(labs_of "$d" "$G")" == "enable-webrtc-pipewire-camera@1" ]]'
 
+# The empty app ID: apps the portal can't name (Firefox on LXQt).
+d=$(new_env)
+store_set "$d" "" yes
+run "$d" status
+check "status: a stored empty-ID entry is listed (id=), not portal-none" \
+    'grep -qxP "portal\tid=\tstate=yes" "$d/out" && ! grep -qx portal-none "$d/out"'
+run "$d" check
+check "check: shown as (no app ID), with what it means" \
+    'grep -q "(no app ID): *allowed" "$d/out" && grep -q "apps the portal can.t name" "$d/out"'
+d=$(new_env)
+run "$d" status
+check "status: nothing stored, no browser: portal-none, no empty-ID line" \
+    'grep -qx portal-none "$d/out" && ! grep -qP "^portal\tid=\t" "$d/out"'
+add_bin "$d" google-chrome-stable
+run "$d" yes
+check "--yes never adds a \"yes\" for the empty ID (it covers every unnamed app)" \
+    '[[ "$(perm_of "$d" com.google.Chrome)" == yes ]] && ! grep -q "^|" "$d/store"'
+d=$(new_env)
+store_set "$d" "" no
+run "$d" yes
+check "a stored \"no\" for the empty ID: untouched under --yes, reported" \
+    '[[ "$(perm_of "$d" "")" == no ]] && grep -q "(no app ID): *no (refused without asking)" "$d/out"'
+# As if a person had said yes to removing it: --undo puts the "no" back.
+store_set "$d" "" yes; sed -i "/^|no$/d" "$d/store"
+mkdir -p "$d/home/.local/state/pipewire-browser-camera-fix"
+echo "portal-was-no " > "$d/home/.local/state/pipewire-browser-camera-fix/changes"
+run "$d" undo
+check "--undo: the empty ID back to \"no\", named as (no app ID)" \
+    '[[ "$(perm_of "$d" "")" == no ]] && grep -q "Portal: (no app ID) back to \"no\"" "$d/out" && [[ -z "$(state_of "$d")" ]]'
+
+# --allow: one portal app ID, for the tray's Allow button.
+d=$(new_env)
+add_bin "$d" google-chrome-stable
+store_set "$d" com.google.Chrome no
+run "$d" set "allow com.google.Chrome"
+check "allow over a stored \"no\": yes, recorded as was-no, exit 0" \
+    '[[ "$(perm_of "$d" com.google.Chrome)" == yes && "$(state_of "$d")" == "portal-was-no com.google.Chrome" && "$(cat "$d/rc")" == 0 ]]'
+run "$d" set "allow com.google.Chrome"
+check "allow again: already allowed, still one record" 'grep -q "already allowed" "$d/out" && [[ $(state_of "$d" | wc -l) == 1 ]]'
+run "$d" undo
+check "--undo: back to \"no\"" '[[ "$(perm_of "$d" com.google.Chrome)" == no ]]'
+d=$(new_env)
+add_bin "$d" google-chrome-stable
+run "$d" set "allow com.google.Chrome"
+check "allow when not set (GNOME's case): yes, recorded" '[[ "$(perm_of "$d" com.google.Chrome)" == yes && "$(state_of "$d")" == "portal com.google.Chrome" ]]'
+run "$d" undo
+check "--undo: the permission removed again" '[[ -z "$(perm_of "$d" com.google.Chrome)" ]]'
+run "$d" set "allow org.example.NotABrowser"
+check "allow an ID the script doesn't list: refused, nothing stored, exit 1" \
+    '[[ "$(cat "$d/rc")" == 1 && -z "$(perm_of "$d" org.example.NotABrowser)" ]] && grep -q "Not a browser app ID" "$d/out"'
+run "$d" set "allow "
+check "allow the empty ID with nothing refused there: refused, nothing stored" \
+    '[[ "$(cat "$d/rc")" == 1 ]] && ! grep -q "^|" "$d/store" && grep -q "nothing refused there" "$d/out"'
+store_set "$d" "" no
+run "$d" set "allow "
+check "allow the empty ID over a stored \"no\": yes, recorded" \
+    '[[ "$(perm_of "$d" "")" == yes && "$(state_of "$d")" == "portal-was-no " ]] && grep -q "(no app ID): allowed" "$d/out"'
+run "$d" undo
+check "--undo: the empty ID back to \"no\"" '[[ "$(perm_of "$d" "")" == no ]]'
+touch "$d/unreachable"
+run "$d" set "allow com.google.Chrome"
+check "allow with the store unreachable: refused, exit 1" '[[ "$(cat "$d/rc")" == 1 ]] && grep -q "isn.t reachable" "$d/out"'
+
 # The options themselves.
-for args in "--enable" "--status --check" "--yes --enable x" "--undo --status"; do
+for args in "--enable" "--status --check" "--yes --enable x" "--undo --status" "--allow" "--check --allow x"; do
     # shellcheck disable=SC2086  # the options are meant to split
     bash "$SCRIPT" $args &>/dev/null
     # shellcheck disable=SC2034  # read by check (eval)
