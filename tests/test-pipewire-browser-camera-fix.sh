@@ -154,11 +154,11 @@ run() {
         # shellcheck disable=SC2034  # read by the evaluated functions
         MODE="$mode"
         eval "$(sed -n '/^STATE_FILE=/,/^PORTAL_STORE_PATH=/p' "$SCRIPT")"
-        eval "$(grep -E '^EDGE_(FEATURE|MARK)=' "$SCRIPT")"
+        eval "$(grep -E '^(EDGE_(FEATURE|MARK)|PORTAL_STORED_ONLY)=' "$SCRIPT")"
         # shellcheck disable=SC2034  # read by edge_system_desktop
         EDGE_DATA_DIRS="$d/share"
         for fn in section answer_yes ask ask_always record recorded portal_store portal_camera_entries \
-                  portal_camera_state running_chromium_scope_ids firefox_prefs_files \
+                  portal_camera_state portal_id_label running_chromium_scope_ids firefox_prefs_files \
                   firefox_pref_value firefox_running firefox_set_pref profile_label snap_profile \
                   flatpak_profile firefox_unused_profile firefox_default_profile \
                   firefox_system_default firefox_user_js_value firefox_status_label firefox_effective \
@@ -867,6 +867,30 @@ check "portal IDs: Brave as org.chromium.Chromium, Vivaldi as com.vivaldi.Vivald
 run "$d" check
 check "check: never opened and GNOME Web said in words" \
     'grep -q "Brave: *installed, never opened" "$d/out" && grep -q "GNOME Web: *uses the camera through PipeWire by itself" "$d/out"'
+
+# Edge's portal ID, and Firefox's own IDs (shown only when stored).
+d=$(new_env)
+edge_launcher "$d" no
+run "$d" status
+check "portal: Edge alone doesn't list org.chromium.Chromium (on GNOME it was stored under the empty ID)" '[[ -z "$(line_of "$d" portal "id=org.chromium.Chromium")" ]]'
+check "portal: firefox not set: not listed (Firefox gets the dialog)" '! grep -qP "^portal\tid=firefox\t" "$d/out"'
+add_bin "$d" google-chrome-stable
+run "$d" yes
+check "--yes never adds a \"yes\" for firefox" '[[ -z "$(perm_of "$d" firefox)" ]]'
+store_set "$d" firefox yes
+store_set "$d" org.mozilla.firefox no
+run "$d" status
+check "status: firefox and org.mozilla.firefox listed when stored" \
+    'grep -qxP "portal\tid=firefox\tstate=yes" "$d/out" && grep -qxP "portal\tid=org.mozilla.firefox\tstate=no" "$d/out"'
+run "$d" check
+check "check: org.mozilla.firefox's \"no\" reported as refused" 'grep -q "org.mozilla.firefox: *no (refused without asking)" "$d/out"'
+run "$d" set "allow org.mozilla.firefox"
+check "allow over Flatpak Firefox's \"no\": yes, recorded" \
+    '[[ "$(perm_of "$d" org.mozilla.firefox)" == yes ]] && grep -q "portal-was-no org.mozilla.firefox" <<< "$(state_of "$d")"'
+d=$(new_env)
+run "$d" set "allow firefox"
+check "allow firefox with nothing refused: refused, nothing stored" \
+    '[[ "$(cat "$d/rc")" == 1 && -z "$(perm_of "$d" firefox)" ]] && grep -q "firefox: nothing refused there to clear" "$d/out"'
 
 # The options themselves.
 for args in "--enable" "--status --check" "--yes --enable x" "--undo --status" "--allow" "--check --allow x"; do

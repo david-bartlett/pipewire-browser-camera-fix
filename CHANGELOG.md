@@ -2,6 +2,9 @@
 
 ## Unreleased
 
+- **Firefox's portal IDs**
+  On GNOME the portal stores a normal Firefox as `firefox`, and Flatpak Firefox as `org.mozilla.firefox`. Like the empty ID, they're now shown when something is stored, and a "no" there is offered for removal (always asking) and cleared by `--allow`. A "yes" is never added for them by itself: Firefox gets the portal's dialog.
+
 - **Microsoft Edge**
   Edge has no PipeWire camera entry in `edge://flags`, but starting it with `--enable-features=WebRtcPipeWireCamera` works. The script now adds that switch: to `~/.config/microsoft-edge-stable-flags.conf` where Edge's launcher reads it (the AUR package), or to a copy of Edge's menu entry in `~/.local/share/applications/` (Microsoft's own packages). An `--enable-features=` you already have gets the feature added to it. `--status` lists Edge, `--enable`/`--disable microsoft-edge-stable` turn it on and off, and `--undo` takes it out.
 
