@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+- **Edge: turning it on puts back a lost switch**
+  If the copy of Edge's menu entry this script made had lost its PipeWire camera switch (an edit, say), `--status` rightly said off, but `--enable` said "already on" just because the copy was there, and left it off. Now it puts the switch back. Found by Codex review 10 of galaxybook-intel-camera.
 - **Flatpak Chrome-family browsers: a stored "no" is shown**
   A Flatpak Chrome (or Chromium, Brave, Edge, Vivaldi, Opera) uses its Flatpak ID with the portal. Without the same browser installed natively or running, a "no" stored for it wasn't listed, so nothing showed why the camera was refused, and `--allow` turned the ID down. Now an installed Flatpak browser's ID is shown when something is stored for it, and `--allow` clears a "no" there. "Not set" stays hidden, because GNOME's dialog works for Flatpaks. Found by Codex review 10 of galaxybook-intel-camera.
 

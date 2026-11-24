@@ -881,6 +881,17 @@ check "Edge off: our copy removed, the system's entry used again" '[[ ! -e "$UD"
 run "$d" set "on microsoft-edge-stable"
 run "$d" undo
 check "--undo: our copy removed" '[[ ! -e "$UD" ]]'
+# Our marked copy that has lost the switch (Codex review 10): status says off,
+# and on puts the switch back rather than saying "already on".
+run "$d" set "on microsoft-edge-stable"
+sed -i 's/ --enable-features=WebRtcPipeWireCamera//' "$UD"
+run "$d" status
+check "our copy without the switch: status off" '[[ "$(field "$(line_of "$d" chrome "Microsoft Edge")" flag)" == off ]]'
+run "$d" set "on microsoft-edge-stable"
+check "our copy without the switch: on puts it back in every Exec line, exit 0" \
+    '[[ "$(cat "$d/rc")" == 0 ]] && grep -q "put back" "$d/out" && [[ $(grep -c "^Exec=.*--enable-features=WebRtcPipeWireCamera" "$UD") == 2 ]] && grep -qx "X-PipeWire-Browser-Camera-Fix=true" "$UD"'
+run "$d" undo
+check "--undo after that: our copy removed" '[[ ! -e "$UD" ]]'
 printf '[Desktop Entry]\nExec=/opt/my-edge %%U\n' > "$UD"
 run "$d" set "on microsoft-edge-stable"
 check "a menu entry copy of the user's own: refused, untouched, exit 1" \
