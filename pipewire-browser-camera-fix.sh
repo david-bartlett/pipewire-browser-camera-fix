@@ -180,6 +180,24 @@ recorded() {
 # Edge's request was stored under the empty ID too). Firefox gets the dialog, so
 # "not set" is fine for it; a stored "no" isn't, so that's shown and offered.
 PORTAL_STORED_ONLY=("" firefox org.mozilla.firefox)
+# Flatpak Chrome-family browsers: the portal names them by their Flatpak ID,
+# which matches their window, so GNOME's dialog works and "not set" is fine;
+# but a stored "no" blocks the camera without asking, so like the IDs above
+# they're shown (and offered Allow) only when something is stored, once
+# installed (Codex review 10: a Flatpak Chrome's stored "no" was invisible).
+FLATPAK_BROWSER_IDS=(com.google.Chrome com.google.ChromeDev org.chromium.Chromium com.brave.Browser com.microsoft.Edge com.vivaldi.Vivaldi com.opera.Opera)
+# PORTAL_STORED_ONLY plus the Flatpak browsers above that are installed, one
+# per line (the empty ID as an empty line). FLATPAK_SYSTEM_DIR is for the tests.
+portal_stored_only_ids() {
+    local id
+    for id in "${PORTAL_STORED_ONLY[@]}"; do printf '%s\n' "$id"; done
+    for id in "${FLATPAK_BROWSER_IDS[@]}"; do
+        if [[ -d "${FLATPAK_SYSTEM_DIR:-/var/lib/flatpak}/app/$id" || -d "$HOME/.local/share/flatpak/app/$id" ]]; then
+            printf '%s\n' "$id"
+        fi
+    done
+    return 0
+}
 portal_id_label() {
     case "$1" in
         "") echo "(no app ID)" ;;
@@ -1060,9 +1078,12 @@ check_portal() {
         return 0
     fi
     mapfile -t ids < <(browser_portal_app_ids)
-    # The IDs shown only when stored (PORTAL_STORED_ONLY), with what's stored.
-    local -a stored_only=()
-    for id in "${PORTAL_STORED_ONLY[@]}"; do
+    # The IDs shown only when stored (portal_stored_only_ids), with what's
+    # stored; not again if already listed above (a native Chrome's ID).
+    local -a stored_only=() only=()
+    mapfile -t only < <(portal_stored_only_ids)
+    for id in "${only[@]}"; do
+        [[ " ${ids[*]} " == *" $id "* && -n "$id" ]] && continue
         [[ -n "$(portal_camera_state "$entries" "$id")" ]] && stored_only+=("$id")
     done
     if (( ${#ids[@]} + ${#stored_only[@]} == 0 )); then
@@ -1304,7 +1325,8 @@ undo_changes() {
 #   firefox-none   installed=yes|no (no profile: never opened, or not installed)
 #   firefox-unused count=N reads=<folder Firefox uses instead>
 #   portal         id=<app ID> state=yes|no|ask|unset (the empty ID, firefox and
-#                  org.mozilla.firefox only when something is stored: PORTAL_STORED_ONLY)
+#                  org.mozilla.firefox and installed Flatpak Chrome-family IDs only when something
+#                  is stored: portal_stored_only_ids)
 #   portal-none    (no browser needing it)          portal-unreachable
 status_report() {
     local line label dir state prefs eff sys sys_value="" distro kind
@@ -1385,9 +1407,11 @@ status_report() {
     if ! entries=$(portal_camera_entries); then
         echo "portal-unreachable"
     else
-        local -a ids=() stored=()
+        local -a ids=() stored=() only=()
         mapfile -t ids < <(browser_portal_app_ids)
-        for id in "${PORTAL_STORED_ONLY[@]}"; do
+        mapfile -t only < <(portal_stored_only_ids)
+        for id in "${only[@]}"; do
+            [[ " ${ids[*]} " == *" $id "* && -n "$id" ]] && continue
             state=$(portal_camera_state "$entries" "$id")
             [[ -n "$state" ]] && stored+=("$id=$state")
         done
@@ -1398,7 +1422,7 @@ status_report() {
             state=$(portal_camera_state "$entries" "$id")
             printf 'portal\tid=%s\tstate=%s\n' "$id" "${state:-unset}"
         done
-        # PORTAL_STORED_ONLY: only when something is stored for them.
+        # portal_stored_only_ids: only when something is stored for them.
         for id in "${stored[@]}"; do
             printf 'portal\tid=%s\tstate=%s\n' "${id%=*}" "${id##*=}"
         done
@@ -1419,11 +1443,10 @@ portal_allow() {
         return 1
     fi
     state=$(portal_camera_state "$entries" "$id")
-    for x in "${PORTAL_STORED_ONLY[@]}"; do [[ "$x" == "$id" ]] && is_stored_only=1; done
-    if (( is_stored_only )); then
-        [[ "$state" == no ]] && known=1
-    else
-        while IFS= read -r x; do [[ "$x" == "$id" ]] && known=1; done < <(browser_portal_app_ids)
+    while IFS= read -r x; do [[ "$x" == "$id" ]] && known=1; done < <(browser_portal_app_ids)
+    if (( ! known )); then
+        while IFS= read -r x; do [[ "$x" == "$id" ]] && is_stored_only=1; done < <(portal_stored_only_ids)
+        (( is_stored_only )) && [[ "$state" == no ]] && known=1
     fi
     if (( ! known )); then
         if (( is_stored_only )); then
