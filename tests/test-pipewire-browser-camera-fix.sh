@@ -154,7 +154,7 @@ run() {
         # shellcheck disable=SC2034  # read by the evaluated functions
         MODE="$mode"
         eval "$(sed -n '/^STATE_FILE=/,/^PORTAL_STORE_PATH=/p' "$SCRIPT")"
-        eval "$(grep -E '^(EDGE_(FEATURE|MARK)|PORTAL_STORED_ONLY)=' "$SCRIPT")"
+        eval "$(grep -E '^(EDGE_(FEATURE|MARK)|PORTAL_STORED_ONLY|FLATPAK_BROWSER_IDS)=' "$SCRIPT")"
         # shellcheck disable=SC2034  # read by edge_system_desktop, chrome_installed
         EDGE_DATA_DIRS="$d/share" SNAP_ROOT_DIR="$d/snap" FLATPAK_SYSTEM_DIR="$d/flatpak"
         for fn in section answer_yes ask ask_always record recorded portal_store portal_camera_entries \
@@ -164,7 +164,7 @@ run() {
                   firefox_system_default firefox_user_js_value firefox_status_label firefox_effective \
                   chrome_profiles chrome_installed chrome_running chrome_flag \
                   check_environment check_chromium_flag check_firefox_pref check_portal \
-                  undo_changes status_report set_targets portal_allow \
+                  undo_changes status_report set_targets portal_allow portal_stored_only_ids \
                   chrome_unopened pipewire_native_browsers edge_launchers edge_flags_file edge_desktop_name \
                   edge_user_desktop edge_system_desktop edge_features edge_state edge_set check_other_browsers; do
             eval "$(extract_fn "$fn")"
@@ -793,6 +793,33 @@ check "--undo: the empty ID back to \"no\"" '[[ "$(perm_of "$d" "")" == no ]]'
 touch "$d/unreachable"
 run "$d" set "allow com.google.Chrome"
 check "allow with the store unreachable: refused, exit 1" '[[ "$(cat "$d/rc")" == 1 ]] && grep -q "isn.t reachable" "$d/out"'
+
+# Flatpak Chrome (Codex review 10): its ID is com.google.Chrome too, but with no
+# native Chrome or running scope it wasn't listed, so a stored "no" was
+# invisible and --allow refused it. Now shown (and allowed) when something is
+# stored; "not set" stays hidden (GNOME's dialog works for a Flatpak).
+d=$(new_env)
+mkdir -p "$d/flatpak/app/com.google.Chrome"
+add_chrome "$d" ".var/app/com.google.Chrome/config/google-chrome" '["enable-webrtc-pipewire-camera@1"]'
+store_set "$d" com.google.Chrome no
+run "$d" status
+check "Flatpak Chrome: a stored \"no\" is listed" 'grep -qx $'"'"'portal\tid=com.google.Chrome\tstate=no'"'"' "$d/out"'
+run "$d" set "allow com.google.Chrome"
+check "Flatpak Chrome: --allow over the \"no\": yes, recorded" \
+    '[[ "$(perm_of "$d" com.google.Chrome)" == yes && "$(state_of "$d")" == "portal-was-no com.google.Chrome" && "$(cat "$d/rc")" == 0 ]]'
+d=$(new_env)
+mkdir -p "$d/flatpak/app/com.google.Chrome"
+run "$d" status
+check "Flatpak Chrome, nothing stored: not listed (its dialog works)" '! grep -q "id=com.google.Chrome" "$d/out"'
+run "$d" set "allow com.google.Chrome"
+check "Flatpak Chrome, nothing stored: --allow refuses (nothing refused to clear)" \
+    '[[ "$(cat "$d/rc")" == 1 && -z "$(perm_of "$d" com.google.Chrome)" ]]'
+d=$(new_env)
+mkdir -p "$d/flatpak/app/com.google.Chrome"
+add_bin "$d" google-chrome-stable
+store_set "$d" com.google.Chrome no
+run "$d" status
+check "native and Flatpak Chrome: com.google.Chrome listed once" '[[ $(grep -c "id=com.google.Chrome" "$d/out") == 1 ]]'
 
 # ── Microsoft Edge, browsers never opened, GNOME Web ──────────────────────────
 # edge_launcher ENV yes|no: microsoft-edge-stable, reading its flags file or not.
