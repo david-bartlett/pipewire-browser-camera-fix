@@ -2,6 +2,9 @@
 
 ## Unreleased
 
+- **Edge: turning it on puts back a lost switch**
+  If the copy of Edge's menu entry this script made had lost its PipeWire camera switch (an edit, say), `--status` rightly said off, but `--enable` said "already on" just because the copy was there, and left it off. Now it puts the switch back. Found by Codex review 10 of galaxybook-intel-camera.
+
 - **`--status` lists only browsers that are installed**
   Uninstalling a Chrome-family browser leaves its settings folder behind, and `--status` still listed it (Chromium on Fedora, so a settings window showed a row for a browser that was gone). A profile now counts only while its browser's command is on PATH, or its snap or Flatpak is installed. The interactive check still names every profile it finds.
 

@@ -768,7 +768,19 @@ edge_set() {
             echo "⚠ $label: you have your own copy of its menu entry (${user/#$HOME/\~}). Add --enable-features=$EDGE_FEATURE to its Exec= lines by hand."
             return 1
         fi
-        if [[ -f "$user" ]]; then echo "✓ $label: already on"; return 0; fi
+        if [[ -f "$user" ]]; then
+            # Our copy: on only if the switch is still there (Codex review 10:
+            # a marked copy that had lost it said "already on" and stayed off).
+            if [[ "$(edge_features status "$user" desktop 2>/dev/null)" == on ]]; then
+                echo "✓ $label: already on"; return 0
+            fi
+            if edge_features on "$user" desktop 2>/dev/null; then
+                recorded edge "$user" || record "edge-desktop $user"
+                echo "✓ $label: PipeWire camera switch put back in its menu entry (${user/#$HOME/\~}). It takes effect the next time Edge is started from the menu."
+                return 0
+            fi
+            echo "⚠ $label: could not update ${user/#$HOME/\~}"; return 1
+        fi
         if ! sys=$(edge_system_desktop "$cmd"); then
             echo "⚠ $label: no menu entry to copy. Start it with --enable-features=$EDGE_FEATURE."; return 1
         fi
