@@ -2,6 +2,9 @@
 
 ## Unreleased
 
+- **Flatpak Chrome-family browsers: a stored "no" is shown**
+  A Flatpak Chrome (or Chromium, Brave, Edge, Vivaldi, Opera) uses its Flatpak ID with the portal. Without the same browser installed natively or running, a "no" stored for it wasn't listed, so nothing showed why the camera was refused, and `--allow` turned the ID down. Now an installed Flatpak browser's ID is shown when something is stored for it, and `--allow` clears a "no" there. "Not set" stays hidden, because GNOME's dialog works for Flatpaks. Found by Codex review 10 of galaxybook-intel-camera.
+
 - **`--status` lists only browsers that are installed**
   Uninstalling a Chrome-family browser leaves its settings folder behind, and `--status` still listed it (Chromium on Fedora, so a settings window showed a row for a browser that was gone). A profile now counts only while its browser's command is on PATH, or its snap or Flatpak is installed. The interactive check still names every profile it finds.
 
