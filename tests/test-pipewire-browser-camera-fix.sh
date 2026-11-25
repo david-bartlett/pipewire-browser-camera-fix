@@ -48,7 +48,7 @@ echo "test-pipewire-browser-camera-fix ($SCRIPT)"
 # real tools the script uses — so this machine's own browsers can't leak in.
 new_env() {
     local d="$TMP/env-$RANDOM$RANDOM" tool
-    mkdir -p "$d/bin" "$d/home" "$d/proc" "$d/snap"
+    mkdir -p "$d/bin" "$d/snapbin" "$d/home" "$d/proc" "$d/snap"
     : > "$d/store"
     for tool in sort head tail readlink mkdir rm rmdir cat sed wc mv cp mktemp chmod tr awk python3 ln sync id; do
         ln -s "$(command -v "$tool")" "$d/bin/$tool"
@@ -106,6 +106,8 @@ EOF
 }
 
 add_bin()   { printf '#!%s\n' "$BASH" > "$1/bin/$2"; chmod +x "$1/bin/$2"; }
+# A snap's command, as in /snap/bin (SNAP_BIN_DIR).
+add_snap_bin() { printf '#!%s\n' "$BASH" > "$1/snapbin/$2"; chmod +x "$1/snapbin/$2"; }
 # add_chrome ENV RELDIR 'JSON list of enabled_labs_experiments'
 add_chrome() {
     mkdir -p "$1/home/$2"
@@ -146,7 +148,7 @@ run() {
     # shellcheck disable=SC2034  # read by the evaluated set_targets
     local -a SET_TARGETS=("$@")
     (
-        PATH="$d/bin"
+        PATH="$d/bin:$d/snapbin"
         HOME="$d/home"
         unset XDG_STATE_HOME XDG_CONFIG_HOME XDG_DATA_HOME MOZ_LEGACY_HOME
         # shellcheck disable=SC2034  # read by firefox_system_default
@@ -156,7 +158,7 @@ run() {
         eval "$(sed -n '/^STATE_FILE=/,/^PORTAL_STORE_PATH=/p' "$SCRIPT")"
         eval "$(grep -E '^(EDGE_(FEATURE|MARK)|PORTAL_STORED_ONLY|FLATPAK_BROWSER_IDS)=' "$SCRIPT")"
         # shellcheck disable=SC2034  # read by edge_system_desktop, chrome_installed
-        EDGE_DATA_DIRS="$d/share" SNAP_ROOT_DIR="$d/snap" FLATPAK_SYSTEM_DIR="$d/flatpak"
+        EDGE_DATA_DIRS="$d/share" SNAP_ROOT_DIR="$d/snap" FLATPAK_SYSTEM_DIR="$d/flatpak" SNAP_BIN_DIR="$d/snapbin"
         for fn in section answer_yes ask ask_always record recorded portal_store portal_camera_entries \
                   portal_camera_state portal_id_label running_chromium_scope_ids firefox_prefs_files \
                   firefox_pref_value firefox_running firefox_set_pref profile_label snap_profile \
@@ -237,8 +239,8 @@ add_profile "$d" snap/firefox/common/.mozilla/firefox/def.default
 add_profile "$d" .config/mozilla/firefox/ghi.default true
 run "$d" yes
 check "native profile set to true" '[[ "$(pref_in "$d" .mozilla/firefox/abc.default-release)" == true ]]'
-check "snap profile not turned on (snap Firefox crashes on PipeWire)" '[[ -z "$(pref_in "$d" snap/firefox/common/.mozilla/firefox/def.default)" ]]'
-check "snap: says why the pref stays off" 'grep -q "Snap Firefox crashes on the PipeWire camera" "$d/out"'
+check "snap profile not turned on (snap Firefox can crash on PipeWire)" '[[ -z "$(pref_in "$d" snap/firefox/common/.mozilla/firefox/def.default)" ]]'
+check "snap: says why the pref stays off" 'grep -q "Snap Firefox can crash on the PipeWire camera" "$d/out"'
 check "only one pref line left" '[[ $(grep -c allow-pipewire "$d/home/.mozilla/firefox/abc.default-release/prefs.js") == 1 ]]'
 check "other prefs kept" 'grep -q "browser.startup.page" "$d/home/.mozilla/firefox/abc.default-release/prefs.js"'
 check "backup made" '[[ -f "$d/home/.mozilla/firefox/abc.default-release/prefs.js.pipewire-browser-camera-fix.bak" ]]'
@@ -368,6 +370,18 @@ add_chrome "$d" .var/app/com.google.Chrome/config/google-chrome '[]'
 run "$d" check
 check "snap Chromium found once" '[[ "$(grep -c "Chromium (snap)" "$d/out")" == 1 ]]'
 check "Flatpak Chrome found" 'grep -q "Google Chrome (flatpak): *not set" "$d/out"'
+
+# Snap Chromium keeps its profile in ~/snap/chromium/common/chromium (Ubuntu
+# 26.10, 25 Nov 2026), not under current/.config.
+d=$(new_env)
+mkdir -p "$d/home/snap/chromium/9/.config"; ln -s 9 "$d/home/snap/chromium/current"
+add_chrome "$d" snap/chromium/common/chromium '[]'
+run "$d" check
+check "snap Chromium's profile in common/chromium: found once" '[[ "$(grep -c "Chromium (snap)" "$d/out")" == 1 ]]'
+add_snap "$d" chromium
+run "$d" status
+check "…and --status lists it as Chromium (snap), with its folder as the target" \
+    'grep -qP "^chrome\tlabel=Chromium \(snap\)\ttarget=\Q$d/home/snap/chromium/common/chromium\E\t" "$d/out"'
 
 # ── 5. --check ────────────────────────────────────────────────────────────────
 echo
@@ -691,7 +705,7 @@ check "disable: Firefox pref removed (Firefox's default)" '[[ -z "$(pref_in "$d"
 check "disable: one record, the first state" '[[ "$(state_of "$d")" == "firefox $FP unset" ]]'
 run "$d" set "on $SP"
 check "enable snap Firefox: refused, exit 1" \
-    '[[ "$(cat "$d/rc")" == 1 ]] && grep -q "snap Firefox crashes" "$d/out" && [[ "$(pref_in "$d" snap/firefox/common/.mozilla/firefox/def.default)" == true ]]'
+    '[[ "$(cat "$d/rc")" == 1 ]] && grep -q "snap Firefox can crash" "$d/out" && [[ "$(pref_in "$d" snap/firefox/common/.mozilla/firefox/def.default)" == true ]]'
 run "$d" set "off $SP"
 check "disable snap Firefox: set to false" '[[ "$(pref_in "$d" snap/firefox/common/.mozilla/firefox/def.default)" == false ]]'
 touch "$d/firefox-running"
@@ -919,6 +933,14 @@ run "$d" status
 check "status: Brave installed, never opened: chrome-unopened" 'grep -qxP "chrome-unopened\tlabel=Brave" "$d/out"'
 check "status: Vivaldi has a profile: a normal line, not unopened" \
     '! grep -qP "chrome-unopened\tlabel=Vivaldi" "$d/out" && [[ -n "$(line_of "$d" chrome "label=Vivaldi")" ]]'
+d3=$(new_env)
+add_snap_bin "$d3" chromium
+run "$d3" status
+check "status: a snap command (in the snap bin folder), never opened: chrome-unopened, labelled (snap)" \
+    'grep -qxP "chrome-unopened\tlabel=Chromium \(snap\)" "$d3/out"'
+add_chrome "$d3" snap/chromium/common/chromium '[]'
+run "$d3" status
+check "…opened (a profile in common/chromium): no longer unopened" '! grep -q "^chrome-unopened" "$d3/out"'
 check "status: GNOME Web needs nothing: pipewire-native" 'grep -qxP "pipewire-native\tlabel=GNOME Web" "$d/out"'
 check "portal IDs: Brave as org.chromium.Chromium, Vivaldi as com.vivaldi.Vivaldi (installed is enough)" \
     '[[ -n "$(line_of "$d" portal "id=org.chromium.Chromium")" && -n "$(line_of "$d" portal "id=com.vivaldi.Vivaldi")" ]]'

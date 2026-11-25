@@ -11,7 +11,7 @@
 #      Edited directly in each profile's "Local State", never while that browser
 #      runs. A flag you set to Disabled yourself is only changed if you say so.
 #   2. Firefox PipeWire camera pref (media.webrtc.camera.allow-pipewire): on,
-#      except in snap Firefox, which crashes on the PipeWire camera, so there
+#      except in snap Firefox, which can crash on the PipeWire camera, so there
 #      it's turned off.
 #   3. xdg-desktop-portal camera permission for the browsers GNOME cannot show
 #      the "allow camera?" dialog for. See the README for why: on GNOME, Chrome
@@ -451,7 +451,10 @@ chrome_profiles() {
     local -a names=(google-chrome google-chrome-beta google-chrome-unstable chromium
                     BraveSoftware/Brave-Browser vivaldi opera opera-beta opera-developer)
     local -A seen=()
-    for root in "${XDG_CONFIG_HOME:-$HOME/.config}" "$HOME"/snap/*/current/.config "$HOME"/.var/app/*/config; do
+    # Snap Chromium keeps its profile in ~/snap/chromium/common/chromium (found on
+    # Ubuntu 26.10, 25 Nov 2026), other snaps under current/.config.
+    for root in "${XDG_CONFIG_HOME:-$HOME/.config}" "$HOME"/snap/*/current/.config "$HOME"/snap/*/common \
+                "$HOME"/.var/app/*/config; do
         [[ -d "$root" ]] || continue
         case "$root" in
             "$HOME"/snap/*)     kind=" (snap)" ;;
@@ -579,11 +582,13 @@ chromium_flag_tool() {
 }
 
 # Chrome-family browsers installed but never opened: no Local State yet, so
-# nothing to change. "label<TAB>command" for each native one found that way
-# (snap and Flatpak ones make their folders when first started too; they're
-# left out, as their commands aren't on PATH the same way).
+# nothing to change. "label<TAB>command" for each one found that way. A snap's
+# command is on PATH too (/snap/bin/chromium): it's labelled "(snap)" and its
+# profile is looked for in the snap's own folders. Flatpak ones make their
+# folders when first started and are left out, as their commands aren't on PATH.
+# SNAP_BIN_DIR is for the tests.
 chrome_unopened() {
-    local entry cmd dir label
+    local entry cmd dir label path kind
     for entry in "google-chrome-stable:google-chrome:Google Chrome" \
                  "google-chrome-beta:google-chrome-beta:Google Chrome Beta" \
                  "google-chrome-unstable:google-chrome-unstable:Google Chrome Dev" \
@@ -591,9 +596,16 @@ chrome_unopened() {
                  "brave:BraveSoftware/Brave-Browser:Brave" "brave-browser:BraveSoftware/Brave-Browser:Brave" \
                  "vivaldi:vivaldi:Vivaldi" "vivaldi-stable:vivaldi:Vivaldi" "opera:opera:Opera"; do
         cmd=${entry%%:*}; dir=${entry#*:}; label=${dir#*:}; dir=${dir%%:*}
-        command -v "$cmd" &>/dev/null || continue
-        [[ -f "${XDG_CONFIG_HOME:-$HOME/.config}/$dir/Local State" ]] && continue
-        printf '%s\t%s\n' "$label" "$cmd"
+        path=$(command -v "$cmd" 2>/dev/null) || continue
+        if [[ "$path" == "${SNAP_BIN_DIR:-/snap/bin}"/* ]]; then
+            kind=" (snap)"
+            [[ -f "$HOME/snap/${path##*/}/current/.config/$dir/Local State" \
+               || -f "$HOME/snap/${path##*/}/common/$dir/Local State" ]] && continue
+        else
+            kind=""
+            [[ -f "${XDG_CONFIG_HOME:-$HOME/.config}/$dir/Local State" ]] && continue
+        fi
+        printf '%s%s\t%s\n' "$label" "$kind" "$cmd"
     done | sort -u -t$'\t' -k1,1
     return 0
 }
@@ -922,10 +934,12 @@ check_chromium_flag() {
     done
 }
 
-# Snap Firefox can't use PipeWire cameras: inside the snap, its PipeWire library
-# can't load PipeWire's own plugins ("pw_loop_new(): can't make support.system
-# handle"), and Firefox crashes when a site asks for the camera. There the pref
-# stays off, and Firefox uses the V4L2 camera (Camera Relay's loopback device).
+# Snap Firefox can crash on PipeWire cameras: on some versions, its PipeWire
+# library can't load PipeWire's own plugins inside the snap ("pw_loop_new():
+# can't make support.system handle"), and Firefox crashes when a site asks for
+# the camera. (Firefox 161.0-1 on Ubuntu 26.10 worked with the pref on, 25 Nov
+# 2026.) There the pref stays off, and Firefox uses the V4L2 camera (Camera
+# Relay's loopback device), which works everywhere.
 snap_profile() { [[ "$1" == "$HOME"/snap/* ]]; }
 flatpak_profile() { [[ "$1" == "$HOME"/.var/app/* ]]; }
 
@@ -1031,8 +1045,8 @@ check_firefox_pref() {
         echo "  start, so this script won't change it. Edit that user.js line by hand."
     fi
     if (( snaps )); then
-        echo "  Snap Firefox crashes on the PipeWire camera (its PipeWire library can't"
-        echo "  load its plugins inside the snap), so the pref stays off there and"
+        echo "  Snap Firefox can crash on the PipeWire camera (on some versions its PipeWire"
+        echo "  library can't load its plugins inside the snap), so the pref stays off there and"
         echo "  Firefox uses the V4L2 camera (Camera Relay's loopback device)."
     fi
     (( ${#turn_on[@]} + ${#turn_off[@]} )) || return 0
@@ -1475,7 +1489,7 @@ portal_allow() {
 # --enable / --disable: change only the targets named, each a profile this
 # script finds itself (nothing else is touched, whatever path is given).
 # "on" sets the flag or pref on; "off" puts it back to the browser's own
-# default (snap Firefox: off, as it crashes on PipeWire). The state before the
+# default (snap Firefox: off, as it can crash on PipeWire). The state before the
 # first change is recorded, so --undo still goes back to it. One line per
 # target, ✓ or ⚠ with the reason; exits 1 if any target wasn't changed.
 set_targets() {
@@ -1551,7 +1565,7 @@ set_targets() {
             fi
             if snap_profile "$prefs"; then
                 if [[ "$want" == on ]]; then
-                    echo "⚠ $label: snap Firefox crashes on the PipeWire camera, so the pref stays off there (it uses the V4L2 camera)."
+                    echo "⚠ $label: snap Firefox can crash on the PipeWire camera, so the pref stays off there (it uses the V4L2 camera)."
                     failed=1; continue
                 fi
                 to=false

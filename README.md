@@ -7,7 +7,7 @@ It checks the three things those browsers need on the PipeWire camera path, show
 | Check | What it looks at | Fix |
 |---|---|---|
 | Chrome / Chromium flag | `chrome://flags/#enable-webrtc-pipewire-camera` in each profile | Turns it on in Chrome, Chromium, Brave, Vivaldi and Opera (native, snap, Flatpak). The browser must be closed; it keeps a backup of `Local State`. A flag you set to Disabled is only changed if you say yes ([below](#the-chrome-flag)) |
-| Firefox pref | `media.webrtc.camera.allow-pipewire` in each profile's `prefs.js` (native, snap, Flatpak) | Turns it on for normal and Flatpak Firefox, and **off for snap Firefox**, which crashes on the PipeWire camera ([below](#snap-firefox)). Firefox must be closed; it keeps a backup of `prefs.js`. Only the profiles Firefox actually uses are changed ([below](#which-firefox-profiles)) |
+| Firefox pref | `media.webrtc.camera.allow-pipewire` in each profile's `prefs.js` (native, snap, Flatpak) | Turns it on for normal and Flatpak Firefox, and **off for snap Firefox**, which can crash on the PipeWire camera ([below](#snap-firefox)). Firefox must be closed; it keeps a backup of `prefs.js`. Only the profiles Firefox actually uses are changed ([below](#which-firefox-profiles)) |
 | Portal camera permission | The xdg-desktop-portal permission store, for the browsers GNOME can't show the camera dialog for | Allows those browsers to use the camera without the dialog. The browser still asks you per site |
 
 Everything it changes is recorded, and `--undo` puts it back.
@@ -134,13 +134,13 @@ A stored **"no"** blocks the camera without asking. It may be your own choice, o
 
 ## Snap Firefox
 
-Ubuntu's snap Firefox crashes when a site asks for the camera with the PipeWire pref on. Inside the snap, its PipeWire library can't load PipeWire's own plugins, so it can't even start; the log just before the crash shows:
+Ubuntu's snap Firefox can crash when a site asks for the camera with the PipeWire pref on. On the versions where it does, its PipeWire library can't load PipeWire's own plugins inside the snap, so it can't even start; the log just before the crash shows:
 
 ```
 [E] pw.loop [loop.c:67 pw_loop_new()] …: can't make support.system handle: No such file or directory
 ```
 
-Nothing outside the snap can fix that, so the script leaves the pref off there (and turns it off if it's on). Snap Firefox then opens the camera directly as a V4L2 device: a USB webcam, or Camera Relay's loopback device for a libcamera laptop camera. Ubuntu tracks snap Firefox and PipeWire cameras as [LP#2136591](https://bugs.launchpad.net/bugs/2136591). Normal and Flatpak Firefox aren't affected.
+Not every version does it: Firefox 161.0-1 on Ubuntu 26.10 worked with the pref on (25 Nov 2026). Nothing outside the snap can fix it where it happens, and the V4L2 camera works in every version, so the script leaves the pref off there (and turns it off if it's on). Snap Firefox then opens the camera directly as a V4L2 device: a USB webcam, or Camera Relay's loopback device for a libcamera laptop camera. Ubuntu tracks snap Firefox and PipeWire cameras as [LP#2136591](https://bugs.launchpad.net/bugs/2136591). Normal and Flatpak Firefox aren't affected.
 
 ## Which Firefox profiles
 
@@ -171,7 +171,7 @@ Changes made before the project was renamed are in `~/.local/state/browser-camer
 ## Where it's been checked
 
 - **CachyOS (GNOME, Chrome 157):** the "Waiting for your permission" hang, and storing the portal permission fixes it.
-- **Ubuntu 26.04 (GNOME):** the same hang with Chrome, and the script fixes it. Snap Firefox crashes with the PipeWire pref on, so the script keeps it off there. With Mozilla's deb Firefox ([packages.mozilla.org](https://packages.mozilla.org/apt)) instead of the snap, the camera works with the pref on.
+- **Ubuntu 26.04 (GNOME):** the same hang with Chrome, and the script fixes it. Snap Firefox crashed with the PipeWire pref on, so the script keeps it off there. With Mozilla's deb Firefox ([packages.mozilla.org](https://packages.mozilla.org/apt)) instead of the snap, the camera works with the pref on.
 - **Debian 13 (KDE):** Chrome and Firefox work with nothing changed.
 - **EndeavourOS (GNOME):** the script fixes it; the camera then works in Chrome and Firefox.
 - **Fedora 45 (KDE):** the Firefox check, with an unused profile in `~/.config/mozilla` (skipped) and Fedora's package default turning the pref on.
