@@ -2,6 +2,9 @@
 
 ## Unreleased
 
+- **A snap browser isn't taken for a native one**
+  A snap's command is on PATH too (`/snap/bin/chromium`), so snap Chromium on its own made the camera permission section list "Chromium, Brave, Opera and Edge" (`org.chromium.Chromium`) as well as "Chromium (snap)" (`snap.chromium`), which is what the snap really uses. A Chromium folder left in `~/.config` also counted as installed. Commands in `/snap/bin` no longer count as native installs. Found on Ubuntu 26.10.
+
 - **Snap Chromium is found**
   Snap Chromium keeps its settings in `~/snap/chromium/common/chromium`, which the script didn't look in, so it showed as a plain "Chromium" that had never been opened, and its flag couldn't be set. It's now found there and labelled "Chromium (snap)", also when it's installed but not opened yet. Found on Ubuntu 26.10.
 - **Snap Firefox "can" crash on the PipeWire camera**
