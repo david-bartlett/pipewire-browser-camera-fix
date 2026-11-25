@@ -2,6 +2,11 @@
 
 ## Unreleased
 
+- **Snap Chromium is found**
+  Snap Chromium keeps its settings in `~/snap/chromium/common/chromium`, which the script didn't look in, so it showed as a plain "Chromium" that had never been opened, and its flag couldn't be set. It's now found there and labelled "Chromium (snap)", also when it's installed but not opened yet. Found on Ubuntu 26.10.
+- **Snap Firefox "can" crash on the PipeWire camera**
+  The messages said it does. Firefox 161.0-1 on Ubuntu 26.10 worked with the pref on, so they now say it can. The script still keeps the pref off there, because the V4L2 camera works in every version.
+
 - **Edge: turning it on puts back a lost switch**
   If the copy of Edge's menu entry this script made had lost its PipeWire camera switch (an edit, say), `--status` rightly said off, but `--enable` said "already on" just because the copy was there, and left it off. Now it puts the switch back. Found by Codex review 10 of galaxybook-intel-camera.
 - **Flatpak Chrome-family browsers: a stored "no" is shown**
