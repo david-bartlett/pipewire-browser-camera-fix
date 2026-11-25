@@ -159,7 +159,7 @@ run() {
         eval "$(grep -E '^(EDGE_(FEATURE|MARK)|PORTAL_STORED_ONLY|FLATPAK_BROWSER_IDS)=' "$SCRIPT")"
         # shellcheck disable=SC2034  # read by edge_system_desktop, chrome_installed
         EDGE_DATA_DIRS="$d/share" SNAP_ROOT_DIR="$d/snap" FLATPAK_SYSTEM_DIR="$d/flatpak" SNAP_BIN_DIR="$d/snapbin"
-        for fn in section answer_yes ask ask_always record recorded portal_store portal_camera_entries \
+        for fn in section answer_yes native_command ask ask_always record recorded portal_store portal_camera_entries \
                   portal_camera_state portal_id_label running_chromium_scope_ids firefox_prefs_files \
                   firefox_pref_value firefox_running firefox_set_pref profile_label snap_profile \
                   flatpak_profile firefox_unused_profile firefox_default_profile \
@@ -958,6 +958,15 @@ d=$(new_env)
 edge_launcher "$d" no
 run "$d" status
 check "portal: Edge alone doesn't list org.chromium.Chromium (on GNOME it was stored under the empty ID)" '[[ -z "$(line_of "$d" portal "id=org.chromium.Chromium")" ]]'
+d4=$(new_env)
+add_snap_bin "$d4" chromium; add_snap "$d4" chromium
+run "$d4" status
+check "portal: snap Chromium alone: snap.chromium, not org.chromium.Chromium (its /snap/bin command isn't native)" \
+    '[[ -n "$(line_of "$d4" portal "id=snap.chromium")" && -z "$(line_of "$d4" portal "id=org.chromium.Chromium")" ]]'
+add_chrome "$d4" .config/chromium '[]'
+run "$d4" status
+check "status: a native Chromium folder left behind, with only snap Chromium installed: not listed" \
+    '[[ -z "$(line_of "$d4" chrome "label=Chromium	")" ]]'
 check "portal: firefox not set: not listed (Firefox gets the dialog)" '! grep -qP "^portal\tid=firefox\t" "$d/out"'
 add_bin "$d" google-chrome-stable
 run "$d" yes

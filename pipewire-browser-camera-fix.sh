@@ -265,6 +265,16 @@ running_chromium_scope_ids() {
 #
 #   Native and Flatpak Firefox are not listed: launched from the app menu, the
 #   ID the portal sees matches the window, and the dialog works.
+# Is this command installed natively, not as a snap? A snap's command is on
+# PATH too (/snap/bin/chromium on Ubuntu), and a snap has its own portal ID,
+# snap.<name> (Ubuntu 26.10, 25 Nov 2026: snap Chromium alone listed
+# org.chromium.Chromium as well). SNAP_BIN_DIR is for the tests.
+native_command() {
+    local path
+    path=$(command -v "$1" 2>/dev/null) || return 1
+    [[ "$path" != "${SNAP_BIN_DIR:-/snap/bin}"/* ]]
+}
+
 browser_portal_app_ids() {
     local proc="${1:-/proc}" snaps="${2:-/snap}" entry name
     {
@@ -280,12 +290,12 @@ browser_portal_app_ids() {
         # is org.chromium.Chromium as well, but on Ubuntu 26.10's GNOME its
         # camera request was stored under the empty ID and worked with nothing
         # set for org.chromium.Chromium, so Edge alone doesn't list it.
-        if command -v chromium &>/dev/null || command -v chromium-browser &>/dev/null \
-           || command -v brave &>/dev/null || command -v brave-browser &>/dev/null \
-           || command -v opera &>/dev/null; then
+        if native_command chromium || native_command chromium-browser \
+           || native_command brave || native_command brave-browser \
+           || native_command opera; then
             echo "org.chromium.Chromium"
         fi
-        if command -v vivaldi &>/dev/null || command -v vivaldi-stable &>/dev/null; then
+        if native_command vivaldi || native_command vivaldi-stable; then
             echo "com.vivaldi.Vivaldi"
         fi
         for name in firefox chromium brave; do
@@ -507,7 +517,7 @@ chrome_installed() {
         vivaldi)         set -- vivaldi vivaldi-stable ;;
         *)               set -- "${dir##*/}" ;;      # google-chrome-beta, opera, opera-beta…
     esac
-    for cmd in "$@"; do command -v "$cmd" &>/dev/null && return 0; done
+    for cmd in "$@"; do native_command "$cmd" && return 0; done
     return 1
 }
 
